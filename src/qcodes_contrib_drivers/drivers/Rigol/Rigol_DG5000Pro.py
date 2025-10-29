@@ -157,30 +157,6 @@ class RigolDG5000ProChannel(InstrumentChannel):
             )
         )
 
-        self.source_burst_state: Parameter = self.add_parameter(
-            "source_burst_state",
-            get_cmd=f":SOURce{channel}:BURSt:STATe?",
-            set_cmd=f":SOURce{channel}:BURSt:STATe {{}}",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """On/off status of the burst mode for the specified channel"""
-
-        self.source_burst_mode: Parameter = self.add_parameter(
-            "source_burst_mode",
-            get_cmd=f":SOURce{channel}:BURSt:MODE?",
-            set_cmd=f":SOURce{channel}:BURSt:MODE {{}}",
-            val_mapping={"triggered": "TRIG ", "gated": "GAT "},
-        )
-        """Burst type for the specified channel"""
-
-        self.source_sweep_state: Parameter = self.add_parameter(
-            "source_sweep_state",
-            get_cmd=f":SOURce{channel}:SWEep:STATe?",
-            set_cmd=f":SOURce{channel}:SWEep:STATe {{}}",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """On/off status of the Sweep function for the specified channel"""
-
         # 3.14 :TRIGer Commands
 
         self.trigger_count: Parameter = self.add_parameter(
