@@ -1,15 +1,62 @@
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument
-from qcodes.parameters import Parameter
-from qcodes.parameters import create_on_off_val_mapping
-from qcodes.validators import Enum, Ints, Numbers
+from qcodes.parameters import Parameter, ParameterWithSetpoints, ParamRawDataType, create_on_off_val_mapping
+from qcodes.validators import Enum, Ints, Numbers, Arrays
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
-    from numpy.typing import NDArray
-    from typing import Optional
+
+log = logging.getLogger(__name__)
+
+
+class ParameterTimeAxis(Parameter):
+
+    def get_raw(self):
+        p = self.instrument.get_waveform_preamble()
+        return np.linspace(p["xorigin"], p["xorigin"] + p["xincrement"] * p["points"], p["points"])
+
+
+class ScopeArrayRaw(Parameter):
+    def get_raw(self) -> ParamRawDataType:
+
+        # Ensure STOP
+        if self.root_instrument.trigger_status() != "STOP":
+            raise RuntimeError("Waveform data can only be read when the oscilloscope is in the STOP state.")
+
+        # Ensure RAW
+        if self.root_instrument.waveform_mode() != 'raw':
+            raise RuntimeError("Only raw mode is supported for now.")
+
+        # Waveform source
+        self.root_instrument.waveform_source(f"CHAN{self.instrument.channel}")
+
+        # Read data
+        self.root_instrument.write(":WAVeform:DATA?")
+        bytestream = self.root_instrument.visa_handle.read_raw()
+        n = int(bytestream[1:2].decode("ascii"))
+        l = int(bytestream[2:2 + n].decode("ascii"))
+        waveform = bytestream[2 + n:].strip()
+
+        # Convert to ndarray
+        if self.root_instrument.waveform_format() == "byte":
+            waveform = np.frombuffer(waveform, dtype=np.uint8, count=l)
+        else:
+            waveform = np.frombuffer(waveform, dtype=np.uint16, count=l)
+
+        return waveform
+
+
+class ScopeArray(ParameterWithSetpoints):
+
+    def get_raw(self) -> ParamRawDataType:
+        trace_raw = self.instrument.trace_raw()
+
+        # Covert from ADC values to Voltage
+        p = self.root_instrument.get_waveform_preamble()
+        return (trace_raw - p["yreference"] - p["yorigin"]) * p["yincrement"]
 
 
 class RigolDS8000RChannel(InstrumentChannel):
@@ -59,6 +106,7 @@ class RigolDS8000RChannel(InstrumentChannel):
 
         self.offset: Parameter = self.add_parameter(
             "offset",
+            unit="V",
             set_cmd=f":CHANnel{channel}:OFFSet {{:f}}",
             get_cmd=f":CHANnel{channel}:OFFSet?",
             vals=Numbers(),
@@ -68,6 +116,7 @@ class RigolDS8000RChannel(InstrumentChannel):
 
         self.delay_calibration_time: Parameter = self.add_parameter(
             "delay_calibration_time",
+            unit="s",
             set_cmd=f":CHANnel{channel}:TCALibrate {{}}",
             get_cmd=f":CHANnel{channel}:TCALibrate?",
             vals=Numbers(-100e-9, 100e-9),
@@ -77,6 +126,7 @@ class RigolDS8000RChannel(InstrumentChannel):
 
         self.scale: Parameter = self.add_parameter(
             "scale",
+            unit="V",
             set_cmd=f":CHANnel{channel}:SCALe {{:f}}",
             get_cmd=f":CHANnel{channel}:SCAle?",
             vals=Numbers(1e-3, 10),
@@ -104,6 +154,7 @@ class RigolDS8000RChannel(InstrumentChannel):
 
         self.probe_delay: Parameter = self.add_parameter(
             "probe_delay",
+            unit="s",
             set_cmd=f":CHANnel{channel}:PROBe:DELay {{}}",
             get_cmd=f":CHANnel{channel}:PROBe:DELay?",
             vals=Numbers(-100e-9, 100e-9),
@@ -113,6 +164,7 @@ class RigolDS8000RChannel(InstrumentChannel):
 
         self.probe_bias: Parameter = self.add_parameter(
             "probe_bias",
+            unit="V",
             set_cmd=f":CHANnel{channel}:PROBe:BIAS {{}}",
             get_cmd=f":CHANnel{channel}:PROBe:BIAS?",
             vals=Numbers(-5, 5),
@@ -145,6 +197,24 @@ class RigolDS8000RChannel(InstrumentChannel):
         )
         """Offset calibration voltage for calibrating the zero point of the specified channel in (V)"""
 
+        self.trace_raw: Parameter = self.add_parameter(
+            "trace_raw",
+            parameter_class=ScopeArrayRaw,
+            vals=Arrays(shape=(self.root_instrument.waveform_points.get,)),
+            snapshot_value=False
+        )
+        """Trace of the specified channel in ADC units"""
+
+        self.trace: ParameterWithSetpoints = self.add_parameter(
+            "trace",
+            unit="V",
+            parameter_class=ScopeArray,
+            setpoints=(self.parent.timebase_axis,),
+            vals=Arrays(shape=(self.root_instrument.waveform_points.get,)),
+            snapshot_value=False
+        )
+        """Trace of the specified channel in (V)"""
+
     def calibrate(self) -> None:
         """Starts calibration of the active probe connected to the specified channel"""
         self.write(f":CHANnel{self.channel}:CSTart")
@@ -157,6 +227,13 @@ class RigolDS8000R(VisaInstrument):
 
     default_terminator = "\n"
 
+    MODELS = [
+        "DS8104-R",
+        "DS8204-R",
+        "DS8034-R",
+    ]
+    """Models part of the Rigol DS8000-R series of Oscilloscopes """
+
     def __init__(
             self,
             name: str,
@@ -167,14 +244,8 @@ class RigolDS8000R(VisaInstrument):
 
         self.model = self.get_idn()["model"]
 
-        models = [
-            "DS8104-R",
-            "DS8204-R",
-            "DS8034-R",
-        ]
-
-        if self.model in models:
-            i = models.index(self.model)
+        if self.model in self.MODELS:
+            i = self.MODELS.index(self.model)
             self.n_o_ch = [4, 4, 4][i]
             self.bw_limit = [
                 ('20M', '250M', '500M', 'OFF'),
@@ -186,12 +257,14 @@ class RigolDS8000R(VisaInstrument):
         else:
             raise KeyError("Model code " + self.model + " is not recognized")
 
-        self.ch = []
-        """Instrument channels"""
-
-        for i in range(1, self.n_o_ch + 1):
-            channel = RigolDS8000RChannel(self, f"ch{i}", i)
-            self.ch += [self.add_submodule(f"ch{i}", channel)]
+        self.acquire_averages = self.add_parameter(
+            "acquire_averages",
+            set_cmd=":ACQuire:AVERages {}",
+            get_cmd=":ACQuire:AVERages?",
+            vals=Enum(*2 ** np.arange(1, 17)),
+            get_parser=int,
+        )
+        """Number of averages in average acquisition mode (2–65536, power of 2)."""
 
         self.acquire_mdepth: Parameter = self.add_parameter(
             "acquire_mdepth",
@@ -201,6 +274,35 @@ class RigolDS8000R(VisaInstrument):
             get_parser=float
         )
         """Memory depth of the oscilloscope"""
+
+        self.acquire_type = self.add_parameter(
+            "acquire_type",
+            set_cmd=":ACQuire:TYPE {}",
+            get_cmd=":ACQuire:TYPE?",
+            val_mapping={
+                "normal": "NORM",
+                "averages": "AVER",
+                "peak": "PEAK",
+                "high_resolution": "HRES",
+            },
+        )
+        """Acquisition mode (NORMal, AVERages, PEAK, HRESolution)."""
+
+        self.acquire_srate = self.add_parameter(
+            "acquire_srate",
+            get_cmd=":ACQuire:SRATe?",
+            unit="1/s",
+            get_parser=float,
+        )
+        """Current sample rate in samples per second."""
+
+        self.acquire_aalias = self.add_parameter(
+            "acquire_aalias",
+            set_cmd=":ACQuire:AALias {}",
+            get_cmd=":ACQuire:AALias?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Enable or disable anti-aliasing."""
 
         self.timebase_delay_enable: Parameter = self.add_parameter(
             "timebase_delay_enable",
@@ -212,6 +314,7 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_delay_offset: Parameter = self.add_parameter(
             "timebase_delay_offset",
+            unit="s",
             set_cmd=f":TIMebase:DElay:OFFSet {{}}",
             get_cmd=f":TIMebase:DElay:OFFSet?",
             vals=Numbers(),
@@ -221,6 +324,7 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_delay_scale: Parameter = self.add_parameter(
             "timebase_delay_scale",
+            unit="s/div",
             set_cmd=f":TIMebase:DElay:SCALe {{}}",
             get_cmd=f":TIMebase:DElay:SCALe?",
             vals=Numbers(),
@@ -230,6 +334,7 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_offset: Parameter = self.add_parameter(
             "timebase_offset",
+            unit="s",
             set_cmd=f":TIMebase:OFFSet {{}}",
             get_cmd=f":TIMebase:OFFSet?",
             vals=Numbers(),
@@ -239,6 +344,7 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_scale: Parameter = self.add_parameter(
             "timebase_scale",
+            unit="s/div",
             set_cmd=f":TIMebase:SCALe {{}}",
             get_cmd=f":TIMebase:SCALe?",
             vals=Numbers(),
@@ -284,6 +390,180 @@ class RigolDS8000R(VisaInstrument):
             val_mapping=create_on_off_val_mapping(1, 0),
         )
         """On/off status of the fine adjustment function of the horizontal scale"""
+
+        self.trigger_mode = self.add_parameter(
+            "trigger_mode",
+            set_cmd=":TRIGger:MODE {}",
+            get_cmd=":TRIGger:MODE?",
+            val_mapping={
+                "edge": "EDGE",
+                "pulse": "PULS",
+                "slope": "SLOP",
+                "video": "VID",
+                "pattern": "PATT",
+                "duration": "DUR",
+                "timeout": "TIM",
+                "runt": "RUNT",
+                "window": "WIND",
+                "delay": "DEL",
+                "setup": "SET",
+                "nedge": "NEDG",
+                "rs232": "RS232",
+                "iic": "IIC",
+                "spi": "SPI",
+                "can": "CAN",
+                "flexray": "FLEX",
+                "lin": "LIN",
+                "iis": "IIS",
+                "m1553": "M1553",
+            },
+        )
+        """Trigger type"""
+
+        self.trigger_coupling = self.add_parameter(
+            "trigger_coupling",
+            set_cmd=":TRIGger:COUPling {}",
+            get_cmd=":TRIGger:COUPling?",
+            val_mapping={
+                "ac": "AC",
+                "dc": "DC",
+                "lfreject": "LFR",
+                "hfreject": "HFR",
+            },
+        )
+        """Trigger coupling type (AC, DC, LFReject, HFReject)."""
+
+        self.trigger_sweep = self.add_parameter(
+            "trigger_sweep",
+            set_cmd=":TRIGger:SWEep {}",
+            get_cmd=":TRIGger:SWEep?",
+            val_mapping={
+                "auto": "AUTO",
+                "normal": "NORM",
+                "single": "SING",
+            },
+        )
+        """Trigger sweep mode (AUTO, NORMal, SINGle)."""
+
+        self.trigger_holdoff = self.add_parameter(
+            "trigger_holdoff",
+            unit="s",
+            set_cmd=":TRIGger:HOLDoff {}",
+            get_cmd=":TRIGger:HOLDoff?",
+            vals=Numbers(8e-9, 10),
+            get_parser=float,
+        )
+        """Trigger holdoff time in seconds (8 ns – 10 s)."""
+
+        self.trigger_noise_reject = self.add_parameter(
+            "trigger_noise_reject",
+            set_cmd=":TRIGger:NREJect {}",
+            get_cmd=":TRIGger:NREJect?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Enables or disables trigger noise rejection."""
+
+        self.trigger_ext_delay = self.add_parameter(
+            "trigger_ext_delay",
+            unit="s",
+            set_cmd=":TRIGger:EXTDelay {:f}",
+            get_cmd=":TRIGger:EXTDelay?",
+            vals=Numbers(-500000, 500000),
+            get_parser=float,
+        )
+        """External trigger delay in seconds (-500 ns – 500 ns)."""
+
+        self.trigger_edge_source = self.add_parameter(
+            "trigger_edge_source",
+            set_cmd=":TRIGger:EDGE:SOURce {}",
+            get_cmd=":TRIGger:EDGE:SOURce?",
+            val_mapping={
+                "ch1": "CHAN1",
+                "ch2": "CHAN2",
+                "ch3": "CHAN3",
+                "ch4": "CHAN4",
+                "acline": "ACL",
+                "ext": "EXT",
+            },
+        )
+        """Edge trigger source (CHAN1–4, ACLine, EXT)."""
+
+        self.trigger_edge_slope = self.add_parameter(
+            "trigger_edge_slope",
+            set_cmd=":TRIGger:EDGE:SLOPe {}",
+            get_cmd=":TRIGger:EDGE:SLOPe?",
+            val_mapping={
+                "positive": "POS",
+                "negative": "NEG",
+                "rfall": "RFAL",
+            },
+        )
+        """Edge trigger slope (POSitive, NEGative, RFALl)."""
+
+        self.trigger_edge_level = self.add_parameter(
+            "trigger_edge_level",
+            set_cmd=":TRIGger:EDGE:LEVel {}",
+            get_cmd=":TRIGger:EDGE:LEVel?",
+            unit="V",
+            vals=Numbers(-5, 5),
+            get_parser=float,
+        )
+        """Edge trigger level in volts."""
+
+        self.trigger_pulse_source = self.add_parameter(
+            "trigger_pulse_source",
+            set_cmd=":TRIGger:PULSe:SOURce {}",
+            get_cmd=":TRIGger:PULSe:SOURce?",
+            val_mapping={
+                "ch1": "CHAN1",
+                "ch2": "CHAN2",
+                "ch3": "CHAN3",
+                "ch4": "CHAN4",
+            },
+        )
+        """Pulse trigger source (CHAN1–4)."""
+
+        self.trigger_pulse_when = self.add_parameter(
+            "trigger_pulse_when",
+            set_cmd=":TRIGger:PULSe:WHEN {}",
+            get_cmd=":TRIGger:PULSe:WHEN?",
+            val_mapping={
+                "greater": "GRE",
+                "less": "LESS",
+                "gless": "GLES",
+            },
+        )
+        """Pulse trigger condition (GREater, LESS, GLESs)."""
+
+        self.trigger_pulse_uwidth = self.add_parameter(
+            "trigger_pulse_uwidth",
+            set_cmd=":TRIGger:PULSe:UWIDth {}",
+            get_cmd=":TRIGger:PULSe:UWIDth?",
+            unit="s",
+            vals=Numbers(0, 10),
+            get_parser=float,
+        )
+        """Pulse trigger upper width limit in seconds (up to 10 s)."""
+
+        self.trigger_pulse_lwidth = self.add_parameter(
+            "trigger_pulse_lwidth",
+            set_cmd=":TRIGger:PULSe:LWIDth {}",
+            get_cmd=":TRIGger:PULSe:LWIDth?",
+            unit="s",
+            vals=Numbers(800e-12, 10),
+            get_parser=float,
+        )
+        """Pulse trigger lower width limit in seconds (≥ 800 ps)."""
+
+        self.trigger_pulse_level = self.add_parameter(
+            "trigger_pulse_level",
+            set_cmd=":TRIGger:PULSe:LEVel {}",
+            get_cmd=":TRIGger:PULSe:LEVel?",
+            unit="V",
+            vals=Numbers(-5, 5),
+            get_parser=float,
+        )
+        """Pulse trigger level in volts."""
 
         self.waveform_source: Parameter = self.add_parameter(
             "waveform_source",
@@ -336,6 +616,22 @@ class RigolDS8000R(VisaInstrument):
         )
         """Stop position of the waveform data reading"""
 
+        self.timebase_axis: ParameterTimeAxis = self.add_parameter(
+            "timebase_axis",
+            unit="s",
+            parameter_class=ParameterTimeAxis,
+            vals=Arrays(shape=(self.waveform_points.get,)),
+            snapshot_value=False
+        )
+        """Array of values corresponding to the time axes (w.r.t to trigger point)"""
+
+        self.ch = []
+        """Instrument channels"""
+
+        for i in range(1, self.n_o_ch + 1):
+            channel = RigolDS8000RChannel(self, f"ch{i}", i)
+            self.ch += [self.add_submodule(f"ch{i}", channel)]
+
     def trigger_status(self):
         """Queries the current trigger status"""
         return self.ask(":TRIGger:STATus?")
@@ -358,72 +654,28 @@ class RigolDS8000R(VisaInstrument):
         }
         return preample_dict
 
-    def get_trace(self, source: int | str, fmt: str = "byte", pts: Optional[int] = None) -> NDArray[np.uint8]:
-        """
-        Reads a waveform from the oscilloscope in STOP state.
-
-        Args:
-            source: channel like 1..n or SCPI source string (e.g. "CHAN1", "MATH3", etc)
-            fmt: "byte" (8-bit) or "word" (16-bit)
-            pts: optional number of points to request
-
-        Returns:
-            ndarray of dtype uint8 (byte) or uint16 (word)
-        """
-
-        # Ensure STOP
-        if self.trigger_status() != "STOP":
-            raise RuntimeError("Waveform data can only be read when the oscilloscope is in the STOP state.")
-
-        # Waveform source
-        if isinstance(source, int) and (0 < source <= self.n_o_ch):
-            self.waveform_source(f"CHAN{source}")
-        else:
-            self.waveform_source(source)
-
-        # Set format and mode
-        fmt = fmt.lower()
-        if fmt not in {"byte", "word"}:
-            raise ValueError('format must be "byte" or "word"')
-
-        self.waveform_format(fmt)
-        self.waveform_mode("raw")
-
-        if pts is not None:
-            self.waveform_points(int(pts))
-
-        # Read data
-        self.write(":WAVeform:DATA?")
-        bytestream = self.visa_handle.read_raw()
-        n = int(bytestream[1:2].decode("ascii"))
-        l = int(bytestream[2:2 + n].decode("ascii"))
-        waveform = bytestream[2 + n:].strip()
-
-        # Check that all data is present
-        assert len(waveform) == l
-
-        # Convert to ndarray
-        if fmt == "byte":
-            return np.frombuffer(waveform, dtype=np.uint8, count=l)
-        else:
-            return np.frombuffer(waveform, dtype=np.uint16, count=l)
-
     def autoscale(self) -> None:
+        """Enables the waveform auto setting function"""
         self.write(":AUToscale")
 
     def clear(self) -> None:
+        """Clears all the waveforms on the screen"""
         self.write(":CLEar")
 
     def run(self) -> None:
+        """Start the oscilloscope"""
         self.write(":RUN")
 
     def stop(self) -> None:
+        """Stop the oscilloscope"""
         self.write(":STOP")
 
     def single(self) -> None:
+        """Sets the trigger mode of the oscilloscope to 'Single' """
         self.write(":SINGle")
 
     def trigger_force(self) -> None:
+        """Generates a trigger signal forcibly"""
         self.write(":TFORce")
 
     def reset(self):
