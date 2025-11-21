@@ -1,23 +1,17 @@
 import math
 import random
 import string
-import time
 
+import numpy as np
 import pytest
+from numpy import all, array
 
 from qcodes_contrib_drivers.drivers.Rigol.Rigol_DG5000Pro import RigolDG5000Pro
 
 
 @pytest.fixture
 def driver():
-    # Wait before opening a new connection for the next test
-    time.sleep(0.2)
-
-    rigol = RigolDG5000Pro(
-        "rigol",
-        address="TCPIP::192.168.50.153::INSTR",
-    )
-
+    rigol = RigolDG5000Pro("rigol", address="TCPIP::192.168.50.158::INSTR")
     yield rigol
     rigol.close()
 
@@ -37,13 +31,23 @@ def test_display_brightness(driver):
     assert driver.display_brightness() == 42
 
 
-def test_screen_capture(driver):
-    driver.screen_capture("./test.bmp")
+def test_screen_capture_format(driver):
+    driver.screen_capture_format("bmp")
+    assert driver.screen_capture_format() == "bmp"
+    driver.screen_capture_format("png")
+    assert driver.screen_capture_format() == "png"
+
+
+def test_screen_capture_png(driver):
     driver.screen_capture("./test.png")
 
 
+def test_screen_capture_bmp(driver):
+    driver.screen_capture("./test.bmp")
+
+
 def test_display_focus(driver):
-    for i in range(len(driver.ch)):
+    for i in range(len(driver.channels)):
         driver.display_focus(i + 1)
         # assert driver.display_focus() == i + 1    # TODO : Seems to be a bug on the instrument side when reading ch > 2
 
@@ -128,30 +132,28 @@ def test_opc(driver):
 
 # Channel specific commands
 def test_output_debounce(driver):
-    for ch in driver.ch:
-        ch.output_debounce(True)
-        assert ch.output_debounce() == True
-        ch.output_debounce(False)
-        assert ch.output_debounce() == False
+    driver.channels.output_debounce(True)
+    assert all(array(driver.channels.output_debounce()) == True)
+    driver.channels.output_debounce(False)
+    assert all(array(driver.channels.output_debounce()) == False)
 
 
 def test_output_idle(driver):
-    for ch in driver.ch:
-        lvl = random.randint(0, 65535)
-        ch.output_idle(lvl)
-        assert ch.output_idle() == lvl
-        ch.output_idle("FPT")
-        assert ch.output_idle() == "FPT"
-        ch.output_idle("TOP")
-        assert ch.output_idle() == "TOP"
-        ch.output_idle("CENT")
-        assert ch.output_idle() == "CENT"
-        ch.output_idle("BOTT")
-        assert ch.output_idle() == "BOTT"
+    lvl = np.random.randint(0, 65535, size=len(driver.channels))
+    driver.channels.output_idle(lvl)
+    assert all(array(driver.channels.output_idle()) == lvl)
+    driver.channels.output_idle("FPT")
+    assert all(array(driver.channels.output_idle()) == "FPT")
+    driver.channels.output_idle("TOP")
+    assert all(array(driver.channels.output_idle()) == "TOP")
+    driver.channels.output_idle("CENT")
+    assert all(array(driver.channels.output_idle()) == "CENT")
+    driver.channels.output_idle("BOTT")
+    assert all(array(driver.channels.output_idle()) == "BOTT")
 
 
 def test_output_load(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         lvl = random.randint(1, 10000)
         ch.output_load(lvl)
         assert ch.output_load() == lvl
@@ -166,15 +168,14 @@ def test_output_load(driver):
 
 
 def test_output_polarity(driver):
-    for ch in driver.ch:
-        ch.output_polarity("normal")
-        assert ch.output_polarity() == "normal"
-        ch.output_polarity("inverted")
-        assert ch.output_polarity() == "inverted"
+    driver.channels.output_polarity("normal")
+    assert all(array(driver.channels.output_polarity()) == "normal")
+    driver.channels.output_polarity("inverted")
+    assert all(array(driver.channels.output_polarity()) == "inverted")
 
 
 def test_output_skew_time(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         time = random.uniform(-200e-9, 200e-9)
         ch.output_skew_time(time)
         assert math.isclose(ch.output_skew_time(), time, abs_tol=1e-3)
@@ -187,45 +188,41 @@ def test_output_skew_time(driver):
 
 
 def test_output_state(driver):
-    for ch in driver.ch:
-        ch.output_state(True)
-        assert ch.output_state() == True
-        ch.output_state(False)
-        assert ch.output_state() == False
+    driver.channels.output_state(True)
+    assert all(array(driver.channels.output_state()) == True)
+    driver.channels.output_state(False)
+    assert all(array(driver.channels.output_state()) == False)
 
 
 def test_output_sync(driver):
-    for ch in driver.ch:
-        ch.output_sync(False)
-        assert ch.output_sync() == False
-        ch.output_sync(True)
-        assert ch.output_sync() == True
+    driver.channels.output_sync(True)
+    assert all(array(driver.channels.output_sync()) == True)
+    driver.channels.output_sync(False)
+    assert all(array(driver.channels.output_sync()) == False)
 
 
 def test_output_sync_mode(driver):
-    for ch in driver.ch:
-        # Required to enable output sync mode
-        ch.source_sweep_state(True)
+    driver.channels.source_sweep_state(True)  # Required to enable output sync mode
+    driver.channels.output_sync(True)
 
-        ch.output_sync_mode("normal")
-        assert ch.output_sync_mode() == "normal"
-        ch.output_sync_mode("marker")
-        assert ch.output_sync_mode() == "marker"
+    driver.channels.output_sync_mode("normal")
+    assert all(array(driver.channels.output_sync_mode()) == "normal")
+    driver.channels.output_sync_mode("marker")
+    assert all(array(driver.channels.output_sync_mode()) == "marker")
 
 
 def test_output_sync_polarity(driver):
-    for ch in driver.ch:
-        ch.output_sync_polarity("normal")
-        assert ch.output_sync_polarity() == "normal"
-        ch.output_sync_polarity("inverted")
-        assert ch.output_sync_polarity() == "inverted"
+    driver.channels.output_sync_polarity("normal")
+    assert all(array(driver.channels.output_sync_polarity()) == "normal")
+    driver.channels.output_sync_polarity("inverted")
+    assert all(array(driver.channels.output_sync_polarity()) == "inverted")
 
 
 def test_output_trigger(driver):
-    for ch in driver.ch:
-        ch.source_burst_mode("triggered")
-        ch.trigger_source("immediate")
+    driver.channels.source_burst_mode("triggered")  # Required to enable output trigger
+    driver.channels.trigger_source("immediate")
 
+    for ch in driver.channels:
         ch.output_trigger(True)
         assert ch.output_trigger() == True
         ch.output_trigger(False)
@@ -235,7 +232,7 @@ def test_output_trigger(driver):
 # Source commands
 
 def test_source_burst_state(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         ch.source_burst_state(True)
         assert ch.source_burst_state() == True
         ch.source_burst_state(False)
@@ -243,25 +240,24 @@ def test_source_burst_state(driver):
 
 
 def test_source_burst_mode(driver):
-    for ch in driver.ch:
-        ch.source_burst_mode("triggered")
-        assert ch.source_burst_mode() == "triggered"
+    for ch in driver.channels:
         ch.source_burst_mode("gated")
         assert ch.source_burst_mode() == "gated"
+        ch.source_burst_mode("triggered")
+        assert ch.source_burst_mode() == "triggered"
 
 
 def test_source_sweep_state(driver):
-    for ch in driver.ch:
-        ch.source_sweep_state(True)
-        assert ch.source_sweep_state() == True
-        ch.source_sweep_state(False)
-        assert ch.source_sweep_state() == False
+    driver.channels.source_sweep_state(True)
+    assert all(array(driver.channels.source_sweep_state()) == True)
+    driver.channels.source_sweep_state(False)
+    assert all(array(driver.channels.source_sweep_state()) == False)
 
 
 # Trigger commands
 
 def test_trigger_count(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         count = random.randint(1, 1000000)
         ch.trigger_count(count)
         assert ch.trigger_count() == count
@@ -274,7 +270,7 @@ def test_trigger_count(driver):
 
 
 def test_trigger_delay(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         # delay = random.uniform(0, 85)
         delay = 0.001
         ch.trigger_delay(delay)
@@ -286,10 +282,8 @@ def test_trigger_delay(driver):
 
 
 def test_trigger_slope(driver):
-    for ch in driver.ch:
-        # Required to enable trigger slope
-        ch.trigger_source("external")
-
+    driver.channels.trigger_source("external")  # Required to enable trigger slope
+    for ch in driver.channels:
         ch.trigger_slope("negative")
         assert ch.trigger_slope() == "negative"
         ch.trigger_slope("positive")
@@ -297,7 +291,8 @@ def test_trigger_slope(driver):
 
 
 def test_trigger_source(driver):
-    for ch in driver.ch:
+    driver.channels.source_burst_state(True)  # Required to enable trigger all possible trigger sources
+    for ch in driver.channels:
         ch.trigger_source("immediate")
         assert ch.trigger_source() == "immediate"
         ch.trigger_source("external")
@@ -305,11 +300,13 @@ def test_trigger_source(driver):
         ch.trigger_source("bus")
         assert ch.trigger_source() == "bus"
         ch.trigger_source("timer")
-        assert ch.trigger_source() == "timer"  # TODO : "timer" might only be available for remote mode
+        assert ch.trigger_source() == "timer"
 
 
 def test_trigger_timer(driver):
-    for ch in driver.ch:
+    driver.channels.source_burst_state(True)  # Required to enable trigger all possible trigger sources
+    driver.channels.trigger_source("timer")
+    for ch in driver.channels:
         time = random.uniform(1e-6, 8000)
         ch.trigger_timer(time)
         assert math.isclose(ch.trigger_timer(), time)
@@ -320,12 +317,12 @@ def test_trigger_timer(driver):
 
 
 def test_ch_trigger(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         ch.trigger()
 
 
 def test_source_apply_ramp(driver):
-    for ch in driver.ch:
+    for ch in driver.channels:
         frequency = 5e6 * random.random()
         amplitude = 1
         offset = 0

@@ -1,9 +1,12 @@
 from typing import TYPE_CHECKING, Union
 
-from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument
+from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument, \
+    ChannelList
 from qcodes.parameters import Parameter
 from qcodes.parameters import create_on_off_val_mapping
 from qcodes.validators import Enum, Ints, MultiType, Numbers, Strings
+
+import time
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -36,10 +39,7 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "output_idle",
             get_cmd=f":OUTPut{channel}:IDLE?",
             set_cmd=f":OUTPut{channel}:IDLE {{}}",
-            vals=MultiType(
-                Ints(0, 65535),
-                Enum("FPT", "TOP", "CENT", "BOTT")
-            ),
+            vals=MultiType(Ints(0, 65535), Enum("FPT", "TOP", "CENT", "BOTT")),
             get_parser=lambda x: int(x) if x.isdigit() else x,
         )
         """Idle level position of the burst mode for the specified channel"""
@@ -48,10 +48,8 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "output_load",
             get_cmd=f":OUTPut{channel}:LOAD?",
             set_cmd=f":OUTPut{channel}:LOAD {{}}",
-            vals=MultiType(
-                Ints(1, 10000),  # Ohms
-                Enum("INF", "MIN", "MAX", "DEF")),
-            get_parser=float
+            vals=MultiType(Ints(1, 10000), Enum("INF", "MIN", "MAX", "DEF")),  # Ohms
+            get_parser=float,
         )
         """Output impedance for the specified channel"""
 
@@ -59,7 +57,7 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "output_polarity",
             get_cmd=f":OUTPut{channel}:POLarity?",
             set_cmd=f":OUTPut{channel}:POLarity {{}}",
-            val_mapping={"normal": "NORM ", "inverted": "INV "}
+            val_mapping={"normal": "NORM ", "inverted": "INV "},
         )
         """Output polarity for the specified channel"""
 
@@ -67,11 +65,8 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "output_skew_time",
             get_cmd=f":OUTPut{channel}:SKEW:TIME?",
             set_cmd=f":OUTPut{channel}:SKEW:TIME {{}}",
-            vals=MultiType(
-                Numbers(-200e-9, 200e-9),
-                Enum("MIN", "MAX", "DEF")
-            ),
-            get_parser=float
+            vals=MultiType(Numbers(-200e-9, 200e-9), Enum("MIN", "MAX", "DEF")),
+            get_parser=float,
         )
         """Channel-to-channel skew (relative timing of the analog output)"""
 
@@ -96,16 +91,16 @@ class RigolDG5000ProChannel(InstrumentChannel):
             get_cmd=f":OUTPut{channel}:SYNC:MODE?",
             set_cmd=f":OUTPut{channel}:SYNC:MODE {{}}",
             val_mapping={"normal": "NORM", "marker": "MARK"},
-            get_parser=str.strip
+            get_parser=str.strip,
         )
         """Frequency mark function for the specified channel"""
 
         self.output_sync_polarity: Parameter = self.add_parameter(
             "output_sync_polarity",
             get_cmd=f":OUTPut{channel}:SYNC:POLarity?",
-            set_cmd=f":OUTPut{channel}:SYNC:POLarity? {{}}",
+            set_cmd=f":OUTPut{channel}:SYNC:POLarity {{}}",
             val_mapping={"normal": "NORM", "inverted": "INV"},
-            get_parser=str.strip
+            get_parser=str.strip,
         )
         """Polarity of sync signal for the specified channel"""
 
@@ -120,7 +115,7 @@ class RigolDG5000ProChannel(InstrumentChannel):
         self.output_trigger_slope: Parameter = self.add_parameter(
             "output_trigger_slope",
             get_cmd=f":OUTPut{channel}:TRIGger:SLOPe?",
-            set_cmd=f":OUTPut{channel}:TRIGger:SLOPe? {{}}",
+            set_cmd=f":OUTPut{channel}:TRIGger:SLOPe {{}}",
             val_mapping={"positive": "POS", "negative": "NEG"},
         )
         """Slope of the trigger output signal for the specified channel"""
@@ -131,11 +126,8 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "source_am_depth",
             get_cmd=f":SOURce{channel}:AM:DEPTh?",
             set_cmd=f":SOURce{channel}:AM:DEPTh {{}}",
-            vals=MultiType(
-                Ints(0, 120),
-                Enum("MIN", "MAX")
-            ),
-            get_parser=float
+            vals=MultiType(Ints(0, 120), Enum("MIN", "MAX")),
+            get_parser=float,
         )
         """AM modulation depth for the specified channel"""
 
@@ -151,11 +143,33 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "source_am_frequency",
             get_cmd=f":SOURce{channel}:AM:INTernal:FREQuency?",
             set_cmd=f":SOURce{channel}:AM:INTernal:FREQuency {{}}",
-            vals=MultiType(
-                Numbers(2e-3, 1e6),
-                Enum("MIN", "MAX", "DEF")
-            )
+            vals=MultiType(Numbers(2e-3, 1e6), Enum("MIN", "MAX", "DEF")),
         )
+
+        self.source_burst_mode: Parameter = self.add_parameter(
+            "source_burst_mode",
+            get_cmd=f":SOURce{channel}:BURSt:MODE?",
+            set_cmd=f":SOURce{channel}:BURSt:MODE {{}}",
+            val_mapping={"triggered": "TRIG", "gated": "GAT"},
+            get_parser=str.strip,
+        )
+        """Burst type for the specified channel"""
+
+        self.source_burst_state: Parameter = self.add_parameter(
+            "source_burst_state",
+            get_cmd=f":SOURce{channel}:BURSt:STATe?",
+            set_cmd=f":SOURce{channel}:BURSt:STATe {{:d}}",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Burst mode on/off state for the specified channel"""
+
+        self.source_sweep_state: Parameter = self.add_parameter(
+            "source_sweep_state",
+            get_cmd=f":SOURce{channel}:SWEep:STATe?",
+            set_cmd=f":SOURce{channel}:SWEep:STATe {{:d}}",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Sweep function on/off state for the specified channel"""
 
         # 3.14 :TRIGer Commands
 
@@ -163,10 +177,7 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "trigger_count",
             get_cmd=f":TRIGger{channel}:COUNt?",
             set_cmd=f":TRIGger{channel}:COUNt {{}}",
-            vals=MultiType(
-                Ints(1, 1000000),
-                Enum("MIN", "MAX", "DEF")
-            ),
+            vals=MultiType(Ints(1, 1000000), Enum("MIN", "MAX", "DEF")),
             get_parser=lambda x: int(x) if x.isdigit() else x,
         )
         """Trigger count for the specified channel"""
@@ -175,11 +186,8 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "trigger_delay",
             get_cmd=f":TRIGger{channel}:DELay?",
             set_cmd=f":TRIGger{channel}:DElay {{}}",
-            vals=MultiType(
-                Numbers(0, 85),
-                Enum("MIN", "MAX", "DEF")
-            ),
-            get_parser=float
+            vals=MultiType(Numbers(0, 85), Enum("MIN", "MAX", "DEF")),
+            get_parser=float,
         )
         """Trigger delay for the specified channel"""
 
@@ -203,11 +211,8 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "trigger_timer",
             get_cmd=f":TRIGger{channel}:TIMer?",
             set_cmd=f":TRIGger{channel}:TIMer {{}}",
-            vals=MultiType(
-                Numbers(1e-6, 8000),
-                Enum("MIN", "MAX")
-            ),
-            get_parser=float
+            vals=MultiType(Numbers(1e-6, 8000), Enum("MIN", "MAX")),
+            get_parser=float,
         )
         """Trigger timer for the specified channel"""
 
@@ -222,12 +227,13 @@ class RigolDG5000ProChannel(InstrumentChannel):
         with the specified frequency, amplitude, offset, and phase.
 
         Args:
-            frequency:
-            amplitude:
-            offset:
-            phase:
+                frequency:
+                amplitude:
+                offset:
+                phase:
         """
-        # TODO : Add validators to the input
+        Numbers(*self.root_instrument.frequency_range["ramp"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
         self.write(f":SOURce{self.channel}:APPLy:RAMP {frequency},{amplitude},{offset},{phase}")
 
 
@@ -237,6 +243,60 @@ class RigolDG5000Pro(VisaInstrument):
     """
 
     default_terminator = "\n"
+
+    MODELS = [
+        "DG5258 Pro",
+        "DG5358 Pro",
+        "DG5508 Pro",
+        "DG5254 Pro",
+        "DG5354 Pro",
+        "DG5504 Pro",
+        "DG5252 Pro",
+        "DG5352 Pro",
+        "DG5502 Pro",
+    ]
+
+    NUM_CHANNELS = {
+        "DG5258 Pro": 8,
+        "DG5358 Pro": 8,
+        "DG5508 Pro": 8,
+        "DG5254 Pro": 4,
+        "DG5354 Pro": 4,
+        "DG5504 Pro": 4,
+        "DG5252 Pro": 2,
+        "DG5352 Pro": 2,
+        "DG5502 Pro": 2,
+    }
+
+    FREQ_RANGE = {
+        "DG52": {
+            "sine": (1e-6, 250e6),
+            "square_ft_on": (1e-6, 170e6),
+            "square_ft_off": (1e-6, 120e6),
+            "ramp": (1e-6, 5e6),
+            "pulse": (1e-6, 120e6),
+            "arb": (1e-6, 100e6),
+            "harmonic": (1e-6, 125e6),
+        },
+        "DG53": {
+            "sine": (1e-6, 350e6),
+            "square_ft_on": (1e-6, 170e6),
+            "square_ft_off": (1e-6, 120e6),
+            "ramp": (1e-6, 5e6),
+            "pulse": (1e-6, 120e6),
+            "arb": (1e-6, 100e6),
+            "harmonic": (1e-6, 175e6),
+        },
+        "DG55": {
+            "sine": (1e-6, 500e6),
+            "square_ft_on": (1e-6, 170e6),
+            "square_ft_off": (1e-6, 120e6),
+            "ramp": (1e-6, 5e6),
+            "pulse": (1e-6, 120e6),
+            "arb": (1e-6, 100e6),
+            "harmonic": (1e-6, 250e6),
+        },
+    }
 
     def __init__(
             self,
@@ -248,36 +308,20 @@ class RigolDG5000Pro(VisaInstrument):
 
         self.model = self.get_idn()["model"]
 
-        models = ["DG5258 Pro",
-                  "DG5358 Pro",
-                  "DG5508 Pro",
-                  "DG5254 Pro",
-                  "DG5354 Pro",
-                  "DG5504 Pro",
-                  "DG5252 Pro",
-                  "DG5352 Pro",
-                  "DG5502 Pro"]
-
-        if self.model in models:
-            i = models.index(self.model)
-            n_o_ch = [8, 8, 8, 4, 4, 4, 2, 2, 2][i]
+        if self.model in self.MODELS:
+            self.frequency_range = self.FREQ_RANGE[self.model[:4]]
         elif self.model is None:
             raise KeyError("Could not determine model")
         else:
             raise KeyError("Model code " + self.model + " is not recognized")
 
-        self.ch = []
+        channels = ChannelList(self, "ch", RigolDG5000ProChannel)
+        for i in range(1, self.NUM_CHANNELS[self.model] + 1):
+            channels.append(RigolDG5000ProChannel(self, f"ch{i}", i))
+        self.channels = channels.to_channel_tuple()
         """Instrument channels"""
 
-        for i in range(1, n_o_ch + 1):
-            channel = RigolDG5000ProChannel(self, f"ch{i}", i)
-            self.ch += [self.add_submodule(f"ch{i}", channel)]
-
-        self.add_function(
-            "abort",
-            call_cmd=":ABORt",
-            docstring="Stops any operation that is triggered"
-        )
+        self.add_function("abort", call_cmd=":ABORt", docstring="Stops any operation that is triggered")
 
         # :DISPlay commands are used to set or query the status of the current channel and
         # display, and select the method to specify the voltage range, frequency sweep range,
@@ -309,10 +353,7 @@ class RigolDG5000Pro(VisaInstrument):
         """State of the front-panel screen (on or off)"""
 
         self.display_text = self.add_parameter(
-            "display_text",
-            get_cmd=":DISPlay:TEXT?",
-            set_cmd=":DISPlay:TEXT \"{:s}\"",
-            vals=Strings(max_length=40)
+            "display_text", get_cmd=":DISPlay:TEXT?", set_cmd=':DISPlay:TEXT "{:s}"', vals=Strings(max_length=40)
         )
         """Text message displayed on the front-panel screen"""
 
@@ -363,7 +404,7 @@ class RigolDG5000Pro(VisaInstrument):
         self.screen_capture_format: Parameter = self.add_parameter(
             "screen_capture_format",
             get_cmd=":HCOPy:SDUMp:DATA:FORMat?",
-            set_cmd=":HCOPy:SDUMp:DATA:FORMat? {}",
+            set_cmd=":HCOPy:SDUMp:DATA:FORMat {}",
             val_mapping={"png": "PNG", "bmp": "BMP"},
         )
         """Format of the screen capture image"""
@@ -396,44 +437,46 @@ class RigolDG5000Pro(VisaInstrument):
         l = int(bytestream[2:2 + n].decode("ascii"))
         img = bytestream[2 + n:].strip()
 
-        assert len(img) == l
+        if len(img) != l:
+            raise ValueError(f"Screen capture data length mismatch: expected {l}, got {len(img)}")
 
         with open(file=fname, mode="wb") as f:
             f.write(img)
 
     # IEEE488.2 Common Commands
 
-    def opc(self) -> int:
-        """
-        Queries whether all the previous commands are executed.
-
-        The query returns 1 to the output buffer after the command is executed.
-        """
-        ret_val = self.ask("*OPC?")
-        return int(ret_val)
-
-    def clear(self) -> None:
-        """Clears all the event registers, and also clears the error queue"""
-        self.write("*CLS")
-
     def options(self) -> tuple[str, ...]:
         """Queries the options installed in your instrument"""
         options_raw = self.ask("*OPT?")
         return tuple(options_raw.split(","))
 
-    def reset(self) -> None:
-        """Resets the instrument to its factory default state"""
-        self.write("*RST")
 
     def save(self, slot=0) -> None:
         """Stores the current instrument state to a specified location in non-volatile memory"""
         Enum(0, 1, 2, 3, 4, 5).validate(slot)
         self.write(f"*SAVE {slot:d}")
 
+
+    def clear(self):
+        """Clears all the event registers, and also clears the error queue"""
+        self.write("*CLS")
+
+
+    def opc(self):
+        """Queries whether all the previous commands are executed (operation complete)"""
+        assert self.ask("*OPC?") == "1"
+
+
+    def reset(self):
+        """Resets the instrument to its factory default settings"""
+        self.write("*RST")
+
+
     def trigger(self):
         """Generates a trigger event"""
         self.write("*TRG")
 
-    def wait(self) -> None:
-        """Waits for the operation to complete"""
-        self.write("*WAI")  # TODO: Test this, self.ask(...) might be required instead
+
+    def wait(self):
+        """Waits for all the pending operations to complete"""
+        self.write("*WAI")

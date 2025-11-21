@@ -2,7 +2,8 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
-from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument
+from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument, \
+    ChannelList
 from qcodes.parameters import Parameter, ParameterWithSetpoints, ParamRawDataType, create_on_off_val_mapping
 from qcodes.validators import Enum, Ints, Numbers, Arrays
 
@@ -234,6 +235,12 @@ class RigolDS8000R(VisaInstrument):
     ]
     """Models part of the Rigol DS8000-R series of Oscilloscopes """
 
+    NUM_CHANNELS = {
+        "DS8104-R": 4,
+        "DS8204-R": 4,
+        "DS8034-R": 4,
+    }
+
     def __init__(
             self,
             name: str,
@@ -246,7 +253,6 @@ class RigolDS8000R(VisaInstrument):
 
         if self.model in self.MODELS:
             i = self.MODELS.index(self.model)
-            self.n_o_ch = [4, 4, 4][i]
             self.bw_limit = [
                 ('20M', '250M', '500M', 'OFF'),
                 ('20M', '250M', '500M', 'OFF'),
@@ -625,12 +631,11 @@ class RigolDS8000R(VisaInstrument):
         )
         """Array of values corresponding to the time axes (w.r.t to trigger point)"""
 
-        self.ch = []
+        channels = ChannelList(self, "ch", RigolDS8000RChannel)
+        for i in range(1, self.NUM_CHANNELS[self.model] + 1):
+            channels.append(RigolDS8000RChannel(self, f"ch{i}", i))
+        self.channels = channels.to_channel_tuple()
         """Instrument channels"""
-
-        for i in range(1, self.n_o_ch + 1):
-            channel = RigolDS8000RChannel(self, f"ch{i}", i)
-            self.ch += [self.add_submodule(f"ch{i}", channel)]
 
     def trigger_status(self):
         """Queries the current trigger status"""

@@ -3,16 +3,14 @@ import random
 
 import numpy as np
 import pytest
+from numpy import all, array
 
 from qcodes_contrib_drivers.drivers.Rigol.Rigol_DS8000R import RigolDS8000R
 
 
 @pytest.fixture
 def driver():
-    rigol = RigolDS8000R(
-        "rigol",
-        address="TCPIP::192.168.50.77::INSTR",
-    )
+    rigol = RigolDS8000R("rigol", address="TCPIP::192.168.50.152::INSTR")
     yield rigol
     rigol.close()
 
@@ -40,8 +38,8 @@ def test_acquire_mdepth(driver):
     driver.acquire_type("normal")
 
     # Turn on only CH1 to have access to max memory depth
-    for i in range(1, driver.n_o_ch):
-        driver.ch[i].display(False)
+    driver.channels.display(False)
+    driver.channels[0].display(True)
 
     mdepths = {1e3: "1k", 1e4: "10k", 1e5: "100k", 1e6: "1M", 1e7: "10M", 1e8: "100M", 125e6: "125M",
                250e6: "250M", 500e6: "500M"}
@@ -301,113 +299,97 @@ def test_waveform_preamble(driver):
 
 
 def test_ch_bw(driver):
-    for ch in driver.ch:
-        ch.bandwidth_limit("OFF")
-        assert ch.bandwidth_limit() == "OFF"
-        ch.bandwidth_limit("20M")
-        assert ch.bandwidth_limit() == "20M"
+    driver.channels.bandwidth_limit("OFF")
+    assert all(array(driver.channels.bandwidth_limit()) == "OFF")
+    driver.channels.bandwidth_limit("20M")
+    assert all(array(driver.channels.bandwidth_limit()) == "20M")
 
 
 def test_ch_coupling(driver):
-    for ch in driver.ch:
-        for coupling in ("AC", "DC", "GND"):
-            ch.coupling(coupling)
-            assert ch.coupling() == coupling
+    for coupling in ("AC", "DC", "GND"):
+        driver.channels.coupling(coupling)
+        assert all(array(driver.channels.coupling()) == coupling)
 
 
 def test_ch_display(driver):
-    for ch in driver.ch:
-        ch.display(False)
-        assert ch.display() == False
-        ch.display(True)
-        assert ch.display() == True
+    driver.channels.display(False)
+    assert all(array(driver.channels.display()) == False)
+    driver.channels.display(True)
+    assert all(array(driver.channels.display()) == True)
 
 
 def test_ch_invert(driver):
-    for ch in driver.ch:
-        ch.invert(True)
-        assert ch.invert() == True
-        ch.invert(False)
-        assert ch.invert() == False
+    driver.channels.invert(True)
+    assert all(array(driver.channels.invert()) == True)
+    driver.channels.invert(False)
+    assert all(array(driver.channels.invert()) == False)
 
 
 def test_ch_offset(driver):
-    for ch in driver.ch:
-        offset = random.random()
-        ch.offset(offset)
-        assert math.isclose(ch.offset(), offset, rel_tol=1e-3)
+    offset = np.random.random(len(driver.channels))
+    driver.channels.offset(offset)
+    assert all(np.isclose(array(driver.channels.offset()), offset, rtol=1e-3))
 
 
 def test_ch_delay_calibration_time(driver):
-    for ch in driver.ch:
-        val = random.uniform(-100e-9, 100e-9)
-        ch.delay_calibration_time(val)
-        assert math.isclose(ch.delay_calibration_time(), val, rel_tol=1e-3)
+    val = np.random.uniform(-100e-9, 100e-9, (len(driver.channels),))
+    driver.channels.delay_calibration_time(val)
+    assert all(np.isclose(array(driver.channels.delay_calibration_time()), val, rtol=1e-3))
 
 
 def test_ch_scale(driver):
-    for ch in driver.ch:
-        scale = random.random()
-        scale = np.round(scale // 10e-3) * 10e-3
-
-        ch.scale(scale)
-        assert math.isclose(ch.scale(), scale)
+    scale = np.random.random(len(driver.channels))
+    driver.channels.scale(scale)
+    assert all(np.isclose(array(driver.channels.scale()), scale, atol=0.01))
 
 
 def test_ch_impedance(driver):
-    for ch in driver.ch:
-        ch.impedance('50 Ohm')
-        assert ch.impedance() == '50 Ohm'
-        ch.impedance('1 MOhm')
-        assert ch.impedance() == '1 MOhm'
+    driver.channels.impedance('50 Ohm')
+    assert all(array(driver.channels.impedance()) == '50 Ohm')
+    driver.channels.impedance('1 MOhm')
+    assert all(array(driver.channels.impedance()) == '1 MOhm')
 
 
 def test_ch_probe(driver):
     vals = (0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200,
             500, 1000, 2000, 5000, 10000, 20000, 50000)
-    for ch in driver.ch:
-        for probe in vals:
-            ch.probe(probe)
-            assert ch.probe() == probe
+
+    for v in vals:
+        driver.channels.probe(v)
+        assert all(array(driver.channels.probe()) == v)
 
 
 def test_ch_units(driver):
-    for ch in driver.ch:
-        for unit in ("volt", "watt", "ampere", "unknown"):
-            ch.units(unit)
-            assert ch.units() == unit
+    for unit in ("volt", "watt", "ampere", "unknown"):
+        driver.channels.units(unit)
+        assert all(array(driver.channels.units()) == unit)
 
 
 def test_ch_vernier(driver):
-    for ch in driver.ch:
-        ch.vernier(True)
-        assert ch.vernier() == True
-        ch.vernier(False)
-        assert ch.vernier() == False
+    driver.channels.vernier(True)
+    assert all(array(driver.channels.vernier()) == True)
+    driver.channels.vernier(False)
+    assert all(array(driver.channels.vernier()) == False)
 
 
 def test_ch_position(driver):
-    for ch in driver.ch:
-        val = random.uniform(-100, 100)
-        ch.position(val)
-        assert math.isclose(ch.position(), val, abs_tol=0.1)
+    val = np.random.uniform(-100, 100, (len(driver.channels),))
+    driver.channels.position(val)
+    assert all(np.isclose(array(driver.channels.position()), val, atol=0.05))
 
 
 def test_ch_calibrate(driver):
-    for ch in driver.ch:
-        ch.calibrate()
+    driver.channels.calibrate()
 
 
 def test_ch_trace_raw(driver):
     driver.stop()
-    for ch in driver.ch:
-        assert ch.trace_raw() is not None
+    assert array(driver.channels.trace_raw()).shape == (4, *driver.timebase_axis().shape)
 
 
 def test_ch_trace(driver):
     driver.stop()
-    for ch in driver.ch:
-        assert ch.trace() is not None
+    assert array(driver.channels.trace()).shape == (4, *driver.timebase_axis().shape)
 
 
 def test_autoscale(driver):
