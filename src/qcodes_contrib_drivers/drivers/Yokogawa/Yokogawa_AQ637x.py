@@ -1,3 +1,8 @@
+"""Driver for Yokogawa AQ637x Optical Spectrum Analyzers.
+
+Provides instrument-level driver, trace/channel abstraction and data retrieval helpers.
+"""
+
 import logging
 import numpy as np
 
@@ -15,16 +20,26 @@ log = logging.getLogger(__name__)
 
 
 class YokogawaData(Parameter):
-    def __init__(self, name: str, format: str = 'real64', get_cmd: str = None, **kwargs) -> None:
+    """Parameter class to read binary trace data from the instrument.
+
+    Supports REAL64 and REAL32 formats and returns a NumPy array.
+    """
+
+    def __init__(self, name: str, format: str = 'REAL64', get_cmd: str = None, **kwargs) -> None:
         super().__init__(name, **kwargs)
 
-        if format not in ['real64', 'real32']:
+        if format not in ['REAL64', 'REAL32']:
             raise NotImplementedError
 
         self.format = format
         self.get_cmd = get_cmd
 
     def get_raw(self) -> ParamRawDataType:
+        """Retrieve raw binary data for this parameter and return as numpy.ndarray.
+
+        The method sets the instrument data format, sends the get command and parses
+        the binary block returned by the instrument into a NumPy array (float64 or float32).
+        """
         # Set data format
         self.root_instrument.format_data(self.format)
 
@@ -36,15 +51,21 @@ class YokogawaData(Parameter):
         data = bytestream[2 + n:].strip()
 
         # Convert to ndarray
-        if self.format == 'real64':
+        if self.format == 'REAL64':
             data = np.frombuffer(data, dtype=np.float64, count=l // 8)
-        elif self.format == 'real32':
+        elif self.format == 'REAL32':
             data = np.frombuffer(data, dtype=np.float32, count=l // 4)
 
         return data
 
 
 class YokogawaAQ637xChannel(InstrumentChannel):
+    """Channel representing a single trace on the Yokogawa OSA.
+
+    Exposes trace-specific parameters (state, attribute, data_x, data_y, etc.)
+    and convenience commands for trace operations (activate, delete, set modes).
+    """
+
     def __init__(
             self,
             parent: Instrument,
@@ -69,12 +90,12 @@ class YokogawaAQ637xChannel(InstrumentChannel):
             set_cmd=f":TRACe:ATTRibute:{trace} {{}}",
             get_cmd=f":TRACe:ATTRibute:{trace}?",
             val_mapping={
-                "write": 0,
-                "fix": 1,
-                "max hold": 2,
-                "min hold": 3,
-                "rolling average": 4,
-                "calculate": 5
+                "WRITE": 0,
+                "FIX": 1,
+                "MAX_HOLD": 2,
+                "MIN_HOLD": 3,
+                "ROLLING_AVERAGE": 4,
+                "CALCULATE": 5
             },
         )
         """Trace Attribute"""
@@ -83,8 +104,8 @@ class YokogawaAQ637xChannel(InstrumentChannel):
             "roll_avg",
             set_cmd=f":TRACe:ATTRibute:RAVG:{trace} {{}}",
             get_cmd=f":TRACe:ATTRibute:RAVG:{trace}?",
+            vals=Ints(2, 100),
             get_parser=int,
-            vals=Ints(2, 100)
         )
         """ROLL AVG averaging count for the specified trace"""
 
@@ -169,8 +190,10 @@ class YokogawaAQ637x(VisaInstrument):
 
         # Create channels (called traces for OSA)
         traces = ChannelList(self, "ch", YokogawaAQ637xChannel)
-        for tr in ('A', 'B', 'C', 'D', 'E', 'F', 'G'):
-            traces.append(YokogawaAQ637xChannel(self, f"TR{tr}", f"TR{tr}"))
+        for ch_letter in ('A', 'B', 'C', 'D', 'E', 'F', 'G'):
+            ch = YokogawaAQ637xChannel(self, f"TR{ch_letter}", f"TR{ch_letter}")
+            setattr(self, f"TR{ch_letter}", ch)
+            traces.append(ch)
         self.traces = traces.to_channel_tuple()
         """Instrument traces (aka channels)"""
 
@@ -220,6 +243,7 @@ class YokogawaAQ637x(VisaInstrument):
             "self_test",
             get_cmd="*TST?",
             get_parser=int,
+            snapshot_value=False,  # Exclude from snapshot as it takes time to execute
         )
         """Run instrument self-test and return status code"""
 
@@ -241,30 +265,30 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":DISPlay?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Enable or disable the display"""
+        """Enable or disable the display (on/off)"""
 
         self.display_overview_position: Parameter = self.add_parameter(
             "display_overview_position",
             set_cmd=":DISPlay:OVIew:POSition {}",
             get_cmd=":DISPlay:OVIew:POSition?",
             val_mapping={
-                "off": 0,
-                "left": 1,
-                "right": 2,
+                "OFF": 0,
+                "LEFT": 1,
+                "RIGHT": 2,
             },
         )
-        """Overview display position (off, left, right)"""
+        """Overview display position (off, left, right) (position)"""
 
         self.display_overview_size: Parameter = self.add_parameter(
             "display_overview_size",
             set_cmd=":DISPlay:OVIew:SIZE {}",
             get_cmd=":DISPlay:OVIew:SIZE?",
             val_mapping={
-                "large": 0,
-                "small": 1,
+                "LARGE": 0,
+                "SMALL": 1,
             },
         )
-        """Overview display size (large or small)"""
+        """Overview display size (large or small) (size)"""
 
         self.display_split: Parameter = self.add_parameter(
             "display_split",
@@ -272,7 +296,7 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":DISPlay:SPLit?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Enable or disable split screen display"""
+        """Enable or disable split screen display (on/off)"""
 
         self.display_split_hold_lower: Parameter = self.add_parameter(
             "display_split_hold_lower",
@@ -280,7 +304,7 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":DISPlay:SPLit:HOLD:LOWer?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Hold the lower trace in split-screen mode"""
+        """Hold the lower trace in split-screen mode (on/off)"""
 
         self.display_split_hold_upper: Parameter = self.add_parameter(
             "display_split_hold_upper",
@@ -288,7 +312,7 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":DISPlay:SPLit:HOLD:UPPer?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Hold the upper trace in split-screen mode"""
+        """Hold the upper trace in split-screen mode (on/off)"""
 
         self.display_text_data: Parameter = self.add_parameter(
             "display_text_data",
@@ -301,19 +325,21 @@ class YokogawaAQ637x(VisaInstrument):
 
         self.display_trace_x_center: Parameter = self.add_parameter(
             "display_trace_x_center",
-            set_cmd=":DISPlay:TRACe:X:SCALe:CENTer {}",
+            set_cmd=":DISPlay:TRACe:X:SCALe:CENTer {}M",
             get_cmd=":DISPlay:TRACe:X:SCALe:CENTer?",
             get_parser=float,
+            unit="m",
         )
-        """Center value of the display X-axis"""
+        """Center value of the display X-axis (m)"""
 
         self.display_trace_x_span: Parameter = self.add_parameter(
             "display_trace_x_span",
-            set_cmd=":DISPlay:TRACe:X:SCALe:SPAN {}",
+            set_cmd=":DISPlay:TRACe:X:SCALe:SPAN {}M",
             get_cmd=":DISPlay:TRACe:X:SCALe:SPAN?",
             get_parser=float,
+            unit="m",
         )
-        """Span of the display X-axis"""
+        """Span of the display X-axis (m)"""
 
         self.display_trace_x_srange: Parameter = self.add_parameter(
             "display_trace_x_srange",
@@ -321,43 +347,45 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":DISPlay:TRACe:X:SCALe:SRANge?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Limit analytical range to the display X-axis scale"""
+        """Limit analytical range to the display X-axis scale (on/off)"""
 
         self.display_trace_x_start: Parameter = self.add_parameter(
             "display_trace_x_start",
-            set_cmd=":DISPlay:TRACe:X:SCALe:STARt {}",
+            set_cmd=":DISPlay:TRACe:X:SCALe:STARt {}M",
             get_cmd=":DISPlay:TRACe:X:SCALe:STARt?",
             get_parser=float,
+            unit="m",
         )
-        """Start value of the display X-axis"""
+        """Start value of the display X-axis (m)"""
 
         self.display_trace_x_stop: Parameter = self.add_parameter(
             "display_trace_x_stop",
-            set_cmd=":DISPlay:TRACe:X:SCALe:STOP {}",
+            set_cmd=":DISPlay:TRACe:X:SCALe:STOP {}M",
             get_cmd=":DISPlay:TRACe:X:SCALe:STOP?",
             get_parser=float,
+            unit="m",
         )
-        """Stop value of the display X-axis"""
+        """Stop value of the display X-axis (m)"""
 
         self.display_trace_y_nmask: Parameter = self.add_parameter(
             "display_trace_y_nmask",
             set_cmd=":DISPlay:TRACe:Y:NMASk {}",
             get_cmd=":DISPlay:TRACe:Y:NMASk?",
-            unit="dB",
             get_parser=float,
+            unit="dB",
         )
-        """Y-axis display mask threshold in dB (-999 disables masking)"""
+        """Y-axis display mask threshold (-999 disables masking) (dB)"""
 
         self.display_trace_y_nmask_type: Parameter = self.add_parameter(
             "display_trace_y_nmask_type",
             set_cmd=":DISPlay:TRACe:Y:NMASk:TYPE {}",
             get_cmd=":DISPlay:TRACe:Y:NMASk:TYPE?",
             val_mapping={
-                "vertical": 0,
-                "horizontal": 1,
+                "VERTICAL": 0,
+                "HORIZONTAL": 1,
             },
         )
-        """Y-axis mask display type (vertical or horizontal)"""
+        """Y-axis mask display type (vertical or horizontal) (type)"""
 
         self.display_trace_y_dnumber: Parameter = self.add_parameter(
             "display_trace_y_dnumber",
@@ -366,67 +394,68 @@ class YokogawaAQ637x(VisaInstrument):
             vals=Enum(8, 10, 12),
             get_parser=int,
         )
-        """Number of Y-axis display divisions (8, 10, or 12)"""
+        """Number of Y-axis display divisions (8, 10, or 12) (divisions)"""
 
         self.display_trace_y1_blevel: Parameter = self.add_parameter(
             "display_trace_y1_blevel",
             set_cmd=":DISPlay:TRACe:Y1:SCALe:BLEVel {}",
             get_cmd=":DISPlay:TRACe:Y1:SCALe:BLEVel?",
-            unit="W",
             get_parser=float,
+            unit="W",
         )
-        """Y1-axis base level for linear scale in watts"""
+        """Y1-axis base level for linear scale (W)"""
 
         self.display_trace_y1_pdivision: Parameter = self.add_parameter(
             "display_trace_y1_pdivision",
             set_cmd=":DISPlay:TRACe:Y1:SCALe:PDIVision {}",
             get_cmd=":DISPlay:TRACe:Y1:SCALe:PDIVision?",
-            unit="dB",
             get_parser=float,
+            unit="dB",
         )
-        """Y1-axis level scale per division in dB"""
+        """Y1-axis level scale per division (dB)"""
 
         self.display_trace_y1_rlevel: Parameter = self.add_parameter(
             "display_trace_y1_rlevel",
-            set_cmd=":DISPlay:TRACe:Y1:SCALe:RLEVel {}",
+            set_cmd=":DISPlay:TRACe:Y1:SCALe:RLEVel {}DBM",
             get_cmd=":DISPlay:TRACe:Y1:SCALe:RLEVel?",
             get_parser=float,
+            unit="dBm",
         )
-        """Y1-axis reference level (log or linear mode dependent)"""
+        """Y1-axis reference level (dBm)"""
 
         self.display_trace_y1_rposition: Parameter = self.add_parameter(
             "display_trace_y1_rposition",
             set_cmd=":DISPlay:TRACe:Y1:SCALe:RPOSition {}",
             get_cmd=":DISPlay:TRACe:Y1:SCALe:RPOSition?",
-            unit="DIV",
             vals=Ints(0, 12),
             get_parser=int,
+            unit="DIV",
         )
-        """Y1-axis reference level position in divisions"""
+        """Y1-axis reference level position (DIV)"""
 
         self.display_trace_y1_spacing: Parameter = self.add_parameter(
             "display_trace_y1_spacing",
             set_cmd=":DISPlay:TRACe:Y1:SCALe:SPACing {}",
             get_cmd=":DISPlay:TRACe:Y1:SCALe:SPACing?",
             val_mapping={
-                "log": 0,
-                "linear": 1,
+                "LOG": 0,
+                "LINEAR": 1,
             },
         )
-        """Y1-axis scale spacing (logarithmic or linear)"""
+        """Y1-axis scale spacing (logarithmic or linear) (type)"""
 
         self.display_trace_y1_unit: Parameter = self.add_parameter(
             "display_trace_y1_unit",
             set_cmd=":DISPlay:TRACe:Y1:SCALe:UNIT {}",
             get_cmd=":DISPlay:TRACe:Y1:SCALe:UNIT?",
             val_mapping={
-                "dbm": 0,
-                "w": 1,
-                "dbm_per_nm": 2,
-                "w_per_nm": 3,
+                "DBM": 0,
+                "W": 1,
+                "DBM_PER_NM": 2,
+                "W_PER_NM": 3,
             },
         )
-        """Y1-axis unit (dBm, W, dBm/nm, or W/nm)"""
+        """Y1-axis unit (dBm, W, dBm/nm, or W/nm) (unit)"""
 
         self.display_trace_y2_auto: Parameter = self.add_parameter(
             "display_trace_y2_auto",
@@ -434,30 +463,32 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":DISPlay:TRACe:Y2:SCALe:AUTO?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Enable or disable automatic scaling of the Y2-axis"""
+        """Enable or disable automatic scaling of the Y2-axis (on/off)"""
 
         self.display_trace_y2_length: Parameter = self.add_parameter(
             "display_trace_y2_length",
-            set_cmd=":DISPlay:TRACe:Y2:SCALe:LENGth {}",
+            set_cmd=":DISPlay:TRACe:Y2:SCALe:LENGth {}KM",
             get_cmd=":DISPlay:TRACe:Y2:SCALe:LENGth?",
-            unit="km",
             get_parser=float,
+            unit='km',
         )
-        """Optical fiber length for Y2-axis when unit is dB/km"""
+        """Optical fiber length for Y2-axis when unit is dB/km (km)"""
 
         self.display_trace_y2_olevel: Parameter = self.add_parameter(
             "display_trace_y2_olevel",
-            set_cmd=":DISPlay:TRACe:Y2:SCALe:OLEVel {}",
+            set_cmd=":DISPlay:TRACe:Y2:SCALe:OLEVel {}DB",
             get_cmd=":DISPlay:TRACe:Y2:SCALe:OLEVel?",
             get_parser=float,
+            unit="dB",
         )
         """Y2-axis offset level (dB or dB/km, unit depends on subscale)"""
 
         self.display_trace_y2_pdivision: Parameter = self.add_parameter(
             "display_trace_y2_pdivision",
-            set_cmd=":DISPlay:TRACe:Y2:SCALe:PDIVision {}",
+            set_cmd=":DISPlay:TRACe:Y2:SCALe:PDIVision {}DB",
             get_cmd=":DISPlay:TRACe:Y2:SCALe:PDIVision?",
             get_parser=float,
+            unit="dB",
         )
         """Y2-axis scale per division (unit depends on subscale)"""
 
@@ -465,18 +496,18 @@ class YokogawaAQ637x(VisaInstrument):
             "display_trace_y2_rposition",
             set_cmd=":DISPlay:TRACe:Y2:SCALe:RPOSition {}",
             get_cmd=":DISPlay:TRACe:Y2:SCALe:RPOSition?",
-            unit="DIV",
             vals=Ints(0, 12),
             get_parser=int,
+            unit="DIV",
         )
-        """Y2-axis reference level position in divisions"""
+        """Y2-axis reference level position (DIV)"""
 
         self.display_trace_y2_sminimum: Parameter = self.add_parameter(
             "display_trace_y2_sminimum",
             set_cmd=":DISPlay:TRACe:Y2:SCALe:SMINimum {}%",
             get_cmd=":DISPlay:TRACe:Y2:SCALe:SMINimum?",
-            unit="%",
             get_parser=float,
+            unit="%",
         )
         """Y2-axis scale minimum value (linear or % mode)"""
 
@@ -485,13 +516,13 @@ class YokogawaAQ637x(VisaInstrument):
             set_cmd=":DISPlay:TRACe:Y2:SCALe:UNIT {}",
             get_cmd=":DISPlay:TRACe:Y2:SCALe:UNIT?",
             val_mapping={
-                "db": 0,
-                "linear": 1,
-                "db_per_km": 2,
-                "percent": 3,
+                "DB": 0,
+                "LINEAR": 1,
+                "DB_PER_KM": 2,
+                "PERCENT": 3,
             },
         )
-        """Y2-axis unit (dB, linear, dB/km, or %)"""
+        """Y2-axis unit (dB, linear, dB/km, or %) (unit)"""
 
         # FORMat Sub System Commands
 
@@ -500,12 +531,12 @@ class YokogawaAQ637x(VisaInstrument):
             set_cmd=":FORMat:DATA {}",
             get_cmd=":FORMat:DATA?",
             val_mapping={
-                "ascii": "ASCII",
-                "real64": "REAL,64",
-                "real32": "REAL,32",
+                "ASCII": "ASCII",
+                "REAL64": "REAL,64",
+                "REAL32": "REAL,32",
             },
         )
-        """Data transfer format (ASCII, REAL 64-bit, or REAL 32-bit)"""
+        """Data transfer format (ASCII, REAL 64-bit, or REAL 32-bit) (format)"""
 
         # INITiate Sub System Command
 
@@ -514,13 +545,13 @@ class YokogawaAQ637x(VisaInstrument):
             set_cmd=":INITiate:SMODe {}",
             get_cmd=":INITiate:SMODe?",
             val_mapping={
-                "single": 1,
-                "repeat": 2,
-                "auto": 3,
-                "segment": 4
+                "SINGLE": 1,
+                "REPEAT": 2,
+                "AUTO": 3,
+                "SEGMENT": 4
             }
         )
-        """Sets/queries the sweep mode"""
+        """Sets/queries the sweep mode (mode)"""
 
         # SENSe Sub System Commands
 
@@ -535,9 +566,10 @@ class YokogawaAQ637x(VisaInstrument):
 
         self.sense_bandwidth_resolution: Parameter = self.add_parameter(
             "sense_bandwidth_resolution",
-            set_cmd=":SENSe:BANDwidth:RESolution {}",
+            set_cmd=":SENSe:BANDwidth:RESolution {}M",
             get_cmd=":SENSe:BANDwidth:RESolution?",
             get_parser=float,
+            unit="m",
         )
         """Measurement resolution (bandwidth)"""
 
@@ -546,79 +578,79 @@ class YokogawaAQ637x(VisaInstrument):
             set_cmd=":SENSe:CHOPper {}",
             get_cmd=":SENSe:CHOPper?",
             val_mapping={
-                "off": 0,
-                "switch": 2,
+                "OFF": 0,
+                "SWITCH": 2,
             },
         )
-        """Chopper mode (off or switch)"""
+        """Chopper mode (off or switch) (mode)"""
 
         self.sense_correction_level_shift: Parameter = self.add_parameter(
             "sense_correction_level_shift",
             set_cmd=":SENSe:CORRection:LEVel:SHIFt {}",
             get_cmd=":SENSe:CORRection:LEVel:SHIFt?",
-            unit="dB",
             get_parser=float,
+            unit="dB",
         )
-        """Level correction offset in dB"""
+        """Level correction offset (dB)"""
 
         self.sense_correction_rvelocity_medium: Parameter = self.add_parameter(
             "sense_correction_rvelocity_medium",
             set_cmd=":SENSe:CORRection:RVELocity:MEDium {}",
             get_cmd=":SENSe:CORRection:RVELocity:MEDium?",
             val_mapping={
-                "air": 0,
-                "vacuum": 1,
+                "AIR": 0,
+                "VACUUM": 1,
             },
         )
-        """Wavelength reference medium (air or vacuum)"""
+        """Wavelength reference medium (air or vacuum) (medium)"""
 
         self.sense_correction_wavelength_shift: Parameter = self.add_parameter(
             "sense_correction_wavelength_shift",
             set_cmd=":SENSe:CORRection:WAVelength:SHIFt {}",
             get_cmd=":SENSe:CORRection:WAVelength:SHIFt?",
-            unit="m",
             get_parser=float,
+            unit="m",
         )
-        """Wavelength correction offset in meters"""
+        """Wavelength correction offset (m)"""
 
         self.sense_sensitivity: Parameter = self.add_parameter(
             "sense_sensitivity",
             set_cmd=":SENSe:SENSe {}",
             get_cmd=":SENSe:SENSe?",
             val_mapping={
-                "normal_hold": 0,
-                "normal_auto": 1,
-                "mid": 2,
-                "high1": 3,
-                "high2": 4,
-                "high3": 5,
-                "normal": 6,
+                "NORMAL_HOLD": 0,
+                "NORMAL_AUTO": 1,
+                "MID": 2,
+                "HIGH1": 3,
+                "HIGH2": 4,
+                "HIGH3": 5,
+                "NORMAL": 6,
             },
         )
-        """Measurement sensitivity setting"""
+        """Measurement sensitivity setting (setting)"""
 
         self.sense_setting_correction: Parameter = self.add_parameter(
             "sense_setting_correction",
             set_cmd=":SENSe:SETTing:CORRection {}",
             get_cmd=":SENSe:SETTing:CORRection?",
             val_mapping={
-                "off": 0,
-                "on_mode1": 1,
-                "on_mode2": 2,
+                "OFF": 0,
+                "ON_MODE1": 1,
+                "ON_MODE2": 2,
             },
         )
-        """Resolution correction function setting"""
+        """Resolution correction function setting (mode)"""
 
         self.sense_setting_fconnector: Parameter = self.add_parameter(
             "sense_setting_fconnector",
             set_cmd=":SENSe:SETTing:FCONnector {}",
             get_cmd=":SENSe:SETTing:FCONnector?",
             val_mapping={
-                "normal": 0,
-                "angled": 1,
+                "NORMAL": 0,
+                "ANGLED": 1,
             },
         )
-        """Fiber connector mode (normal or angled)"""
+        """Fiber connector mode (normal or angled) (mode)"""
 
         if self.model in ("AQ6373", "AQ6373B"):
             self.sense_setting_fiber: Parameter = self.add_parameter(
@@ -626,11 +658,11 @@ class YokogawaAQ637x(VisaInstrument):
                 set_cmd=":SENSe:SETTing:FIBer {}",
                 get_cmd=":SENSe:SETTing:FIBer?",
                 val_mapping={
-                    "small": 0,
-                    "large": 1,
+                    "SMALL": 0,
+                    "LARGE": 1,
                 },
             )
-            """Fiber core size mode (small or large)"""
+            """Fiber core size mode (small or large) (mode)"""
 
         self.sense_setting_smoothing: Parameter = self.add_parameter(
             "sense_setting_smoothing",
@@ -638,7 +670,7 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":SENSe:SETTing:SMOothing?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Enable or disable smoothing"""
+        """Enable or disable smoothing (on/off)"""
 
         self.sense_sweep_points: Parameter = self.add_parameter(
             "sense_sweep_points",
@@ -647,7 +679,7 @@ class YokogawaAQ637x(VisaInstrument):
             vals=Ints(),
             get_parser=int,
         )
-        """Number of samples measured per sweep"""
+        """Number of samples measured per sweep (points)"""
 
         self.sense_sweep_points_auto: Parameter = self.add_parameter(
             "sense_sweep_points_auto",
@@ -655,7 +687,7 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":SENSe:SWEep:POINts:AUTO?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Automatically set the number of sweep points"""
+        """Automatically set the number of sweep points (on/off)"""
 
         self.sense_sweep_segment_points: Parameter = self.add_parameter(
             "sense_sweep_segment_points",
@@ -664,47 +696,47 @@ class YokogawaAQ637x(VisaInstrument):
             vals=Ints(1, 2 ** 31 - 1),
             get_parser=int,
         )
-        """Number of sampling points per segment sweep"""
+        """Number of sampling points per segment sweep (points)"""
 
         self.sense_sweep_speed: Parameter = self.add_parameter(
             "sense_sweep_speed",
             set_cmd=":SENSe:SWEep:SPEed {}",
             get_cmd=":SENSe:SWEep:SPEed?",
             val_mapping={
-                "1x": 0,
-                "2x": 1,
+                "1X": 0,
+                "2X": 1,
             },
         )
-        """Sweep speed (1x = standard, 2x = fast)"""
+        """Sweep speed (1x = standard, 2x = fast) (ratio)"""
 
         self.sense_sweep_step: Parameter = self.add_parameter(
             "sense_sweep_step",
-            set_cmd=":SENSe:SWEep:STEP {}",
+            set_cmd=":SENSe:SWEep:STEP {}M",
             get_cmd=":SENSe:SWEep:STEP?",
-            unit="m",
             get_parser=float,
+            unit="m",
         )
-        """Sampling interval for sweep measurements"""
+        """Sampling interval for sweep measurements (m)"""
 
         self.sense_sweep_time_0nm: Parameter = self.add_parameter(
             "sense_sweep_time_0nm",
             set_cmd=":SENSe:SWEep:TIME:0NM {}",
             get_cmd=":SENSe:SWEep:TIME:0NM?",
-            unit="s",
             vals=Ints(0, 2 ** 31 - 1),
             get_parser=int,
+            unit="s",
         )
-        """Measurement time for 0-nm sweep mode (0 = minimum)"""
+        """Measurement time for 0-nm sweep mode (s)"""
 
         self.sense_sweep_time_interval: Parameter = self.add_parameter(
             "sense_sweep_time_interval",
             set_cmd=":SENSe:SWEep:TIME:INTerval {}",
             get_cmd=":SENSe:SWEep:TIME:INTerval?",
-            unit="s",
             vals=Ints(0, 2 ** 31 - 1),
             get_parser=int,
+            unit="s",
         )
-        """Time between consecutive sweeps (0 = minimum)"""
+        """Time between consecutive sweeps (s)"""
 
         if self.model not in ("AQ6370D", "AQ6373B", "AQ6375B"):
             self.sense_sweep_tlssync: Parameter = self.add_parameter(
@@ -713,23 +745,25 @@ class YokogawaAQ637x(VisaInstrument):
                 get_cmd=":SENSe:SWEep:TLSSync?",
                 val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
             )
-            """Enable or disable synchronous TLS sweep"""
+            """Enable or disable synchronous TLS sweep (on/off)"""
 
         self.sense_wavelength_center: Parameter = self.add_parameter(
             "sense_wavelength_center",
-            set_cmd=":SENSe:WAVelength:CENTer {}",
+            set_cmd=":SENSe:WAVelength:CENTer {}M",
             get_cmd=":SENSe:WAVelength:CENTer?",
             get_parser=float,
+            unit="m",
         )
-        """Measurement center wavelength"""
+        """Measurement center wavelength (m)"""
 
         self.sense_wavelength_span: Parameter = self.add_parameter(
             "sense_wavelength_span",
-            set_cmd=":SENSe:WAVelength:SPAN {}",
+            set_cmd=":SENSe:WAVelength:SPAN {}M",
             get_cmd=":SENSe:WAVelength:SPAN?",
             get_parser=float,
+            unit="m",
         )
-        """Measurement wavelength span"""
+        """Measurement wavelength span (m)"""
 
         self.sense_wavelength_srange: Parameter = self.add_parameter(
             "sense_wavelength_srange",
@@ -737,23 +771,25 @@ class YokogawaAQ637x(VisaInstrument):
             get_cmd=":SENSe:WAVelength:SRANge?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Limit wavelength sweep range to marker L1–L2 spacing"""
+        """Limit wavelength sweep range to marker L1–L2 spacing (on/off)"""
 
         self.sense_wavelength_start: Parameter = self.add_parameter(
             "sense_wavelength_start",
-            set_cmd=":SENSe:WAVelength:STARt {}",
+            set_cmd=":SENSe:WAVelength:STARt {}M",
             get_cmd=":SENSe:WAVelength:STARt?",
             get_parser=float,
+            unit="m",
         )
-        """Measurement start wavelength"""
+        """Measurement start wavelength (m)"""
 
         self.sense_wavelength_stop: Parameter = self.add_parameter(
             "sense_wavelength_stop",
-            set_cmd=":SENSe:WAVelength:STOP {}",
+            set_cmd=":SENSe:WAVelength:STOP {}M",
             get_cmd=":SENSe:WAVelength:STOP?",
             get_parser=float,
+            unit="m",
         )
-        """Measurement stop wavelength"""
+        """Measurement stop wavelength (m)"""
 
     # Common Commands
 
@@ -785,15 +821,18 @@ class YokogawaAQ637x(VisaInstrument):
         self.write(":ABORt")
 
     def auto(self):
-        self.sweep_mode("auto")
+        """Equivalent to the OSA front-panel `AUTO` button: set sweep mode to AUTO and trigger an immediate sweep."""
+        self.sweep_mode("AUTO")
         self.immediate()
 
     def repeat(self):
-        self.sweep_mode("repeat")
+        """Equivalent to the OSA front-panel `REPEAT` button: set sweep mode to REPEAT and trigger continuous sweeps."""
+        self.sweep_mode("REPEAT")
         self.immediate()
 
     def single(self):
-        self.sweep_mode("single")
+        """Equivalent to the OSA front-panel `SINGLE` button: set sweep mode to SINGLE and perform one sweep."""
+        self.sweep_mode("SINGLE")
         self.immediate()
 
     # Display Sub System Commands

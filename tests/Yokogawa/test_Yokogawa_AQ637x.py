@@ -1,8 +1,6 @@
 import pytest
 import math
 
-from pygments.lexers import q
-
 from qcodes_contrib_drivers.drivers.Yokogawa.Yokogawa_AQ637x import YokogawaAQ637x
 
 
@@ -81,13 +79,13 @@ def test_display_enabled(driver):
 
 
 def test_display_overview_position(driver):
-    for mode in ["off", "left", "right"]:
+    for mode in ["OFF", "LEFT", "RIGHT"]:
         driver.display_overview_position(mode)
         assert driver.display_overview_position() == mode
 
 
 def test_display_overview_size(driver):
-    for size in ["large", "small"]:
+    for size in ["LARGE", "SMALL"]:
         driver.display_overview_size(size)
         assert driver.display_overview_size() == size
 
@@ -176,7 +174,7 @@ def test_display_trace_y_nmask(driver):
 
 
 def test_display_trace_y_nmask_type(driver):
-    for mode in ["vertical", "horizontal"]:
+    for mode in ["VERTICAL", "HORIZONTAL"]:
         driver.display_trace_y_nmask_type(mode)
         assert driver.display_trace_y_nmask_type() == mode
 
@@ -214,13 +212,13 @@ def test_display_trace_y1_rposition(driver):
 
 
 def test_display_trace_y1_spacing(driver):
-    for mode in ["log", "linear"]:
+    for mode in ["LOG", "LINEAR"]:
         driver.display_trace_y1_spacing(mode)
         assert driver.display_trace_y1_spacing() == mode
 
 
 def test_display_trace_y1_unit(driver):
-    for unit in ["dbm", "w", "dbm_per_nm", "w_per_nm"]:
+    for unit in ["DBM", "W", "DBM_PER_NM", "W_PER_NM"]:
         driver.display_trace_y1_unit(unit)
         assert driver.display_trace_y1_unit() == unit
 
@@ -265,13 +263,13 @@ def test_display_trace_y2_sminimum(driver):
 
 
 def test_display_trace_y2_unit(driver):
-    for unit in ["db", "linear", "db_per_km", "percent"]:
+    for unit in ["DB", "LINEAR", "DB_PER_KM", "PERCENT"]:
         driver.display_trace_y2_unit(unit)
         assert driver.display_trace_y2_unit() == unit
 
 
 def test_format_data(driver):
-    for fmt in ["ascii", "real64", "real32"]:
+    for fmt in ["ASCII", "REAL64", "REAL32"]:
         driver.format_data(fmt)
         assert driver.format_data() == fmt
 
@@ -289,7 +287,7 @@ def test_sense_bandwidth_resolution(driver):
 
 
 def test_sense_chopper(driver):
-    for mode in ["off", "switch"]:
+    for mode in ["OFF", "SWITCH"]:
         driver.sense_chopper(mode)
         assert driver.sense_chopper() == mode
 
@@ -302,7 +300,7 @@ def test_sense_correction_level_shift(driver):
 
 
 def test_sense_correction_rvelocity_medium(driver):
-    for medium in ["air", "vacuum"]:
+    for medium in ["AIR", "VACUUM"]:
         driver.sense_correction_rvelocity_medium(medium)
         assert driver.sense_correction_rvelocity_medium() == medium
 
@@ -315,20 +313,20 @@ def test_sense_correction_wavelength_shift(driver):
 
 
 def test_sense_sensitivity(driver):
-    for mode in ["normal_hold", "normal_auto", "mid", "high1", "high2", "high3", "normal"]:
+    for mode in ["NORMAL_HOLD", "NORMAL_AUTO", "MID", "HIGH1", "HIGH2", "HIGH3", "NORMAL"]:
         driver.sense_sensitivity(mode)
         assert driver.sense_sensitivity() == mode
 
 
 def test_sense_setting_correction(driver):
-    driver.sense_setting_correction("off")
-    assert driver.sense_setting_correction() == "off"
-    driver.sense_setting_correction("on_mode1")
-    assert driver.sense_setting_correction() == "on_mode1"
+    driver.sense_setting_correction("OFF")
+    assert driver.sense_setting_correction() == "OFF"
+    driver.sense_setting_correction("ON_MODE1")
+    assert driver.sense_setting_correction() == "ON_MODE1"
 
 
 def test_sense_setting_fconnector(driver):
-    for mode in ["normal", "angled"]:
+    for mode in ["NORMAL", "ANGLED"]:
         driver.sense_setting_fconnector(mode)
         assert driver.sense_setting_fconnector() == mode
 
@@ -359,7 +357,7 @@ def test_sense_sweep_segment_points(driver):
 
 def test_sense_sweep_speed(driver):
     driver.reset()
-    for speed in ["1x", "2x"]:
+    for speed in ["1X", "2X"]:
         driver.sense_sweep_speed(speed)
         assert driver.sense_sweep_speed() == speed
 
@@ -439,7 +437,7 @@ def test_trace_active(driver):
 
 def test_trace_attribute(driver):
     for tr in driver.traces:
-        for attribute in ('write', 'fix', 'max hold', 'min hold', 'rolling average', 'calculate'):
+        for attribute in ('WRITE', 'FIX', 'MAX_HOLD', 'MIN_HOLD', 'ROLLING_AVERAGE', 'CALCULATE'):
             tr.attribute(attribute)
             assert tr.attribute() == attribute
 
@@ -471,43 +469,43 @@ def test_trace_delete_all(driver):
 def test_trace_write(driver):
     for tr in driver.traces:
         tr.write_mode()
-        assert tr.attribute() == 'write'
+        assert tr.attribute() == 'WRITE'
 
 
 def test_trace_fix(driver):
     for tr in driver.traces:
         tr.fix()
-        assert tr.attribute() == 'fix'
+        assert tr.attribute() == 'FIX'
 
 
 def test_trace_max_hold(driver):
     for tr in driver.traces:
         tr.max_hold()
-        assert tr.attribute() == 'max hold'
+        assert tr.attribute() == 'MAX_HOLD'
 
 
 def test_trace_min_hold(driver):
     for tr in driver.traces:
         tr.min_hold()
-        assert tr.attribute() == 'min hold'
+        assert tr.attribute() == 'MIN_HOLD'
 
 
 def test_sweep_mode(driver):
-    for mode in ("single", "repeat", "auto", "segment"):
+    for mode in ("SINGLE", "REPEAT", "AUTO", "SEGMENT"):
         driver.sweep_mode(mode)
         assert driver.sweep_mode() == mode
 
 
-def test_auto(driver):
-    driver.auto()
-    assert driver.sweep_mode() is "auto"
-
-
 def test_single(driver):
     driver.single()
-    assert driver.sweep_mode() is "single"
+    assert driver.sweep_mode() is "SINGLE"
 
 
 def test_repeat(driver):
     driver.repeat()
-    assert driver.sweep_mode() is "repeat"
+    assert driver.sweep_mode() is "REPEAT"
+
+
+def test_auto(driver):
+    driver.auto()
+    assert driver.sweep_mode() is "AUTO"
