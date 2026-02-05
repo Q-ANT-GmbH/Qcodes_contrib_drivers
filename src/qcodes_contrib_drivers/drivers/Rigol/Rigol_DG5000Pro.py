@@ -236,6 +236,64 @@ class RigolDG5000ProChannel(InstrumentChannel):
         Numbers(-360, 360).validate(phase)
         self.write(f":SOURce{self.channel}:APPLy:RAMP {frequency},{amplitude},{offset},{phase}")
 
+    def source_apply_sinusoid(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+        """Sets the specified channel to output a sine wave
+
+        Sets the specified channel to output a sine wave with the specified frequency, amplitude, offset, and phase.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+        """
+        Numbers(*self.root_instrument.frequency_range["sine"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
+        self.write(f":SOURce{self.channel}:APPLy:SINusoid {frequency},{amplitude},{offset},{phase}")
+
+    def source_apply_square(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+        """Sets the specified channel to output a square wave
+
+        Sets the specified channel to output a square wave with the specified frequency, amplitude, offset, and phase.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+        """
+        Numbers(*self.root_instrument.frequency_range["square_ft_off"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
+        self.write(f":SOURce{self.channel}:APPLy:SQUare {frequency},{amplitude},{offset},{phase}")
+
+    def source_apply_pulse(self, frequency: float, amplitude: float, offset: float) -> None:
+        """Sets the specified channel to output a pulse
+
+        Sets the specified channel to output a pulse with the specified frequency, amplitude, and offset.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+        """
+        Numbers(*self.root_instrument.frequency_range["pulse"]).validate(frequency)
+        self.write(f":SOURce{self.channel}:APPLy:PULSe {frequency},{amplitude},{offset}")
+
+    def source_apply_arb(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+        """Sets the specified channel to output an arbitrary waveform
+
+        Sets the specified channel to output an arbitrary waveform with the specified frequency, amplitude, offset, and phase.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+        """
+        Numbers(*self.root_instrument.frequency_range["arb"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
+        self.write(f":SOURce{self.channel}:APPLy:ARB {frequency},{amplitude},{offset},{phase}")
+
 
 class RigolDG5000Pro(VisaInstrument):
     """
