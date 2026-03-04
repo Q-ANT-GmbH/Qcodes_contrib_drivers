@@ -95,6 +95,7 @@ module = [
     "niswitch.*",
     "pandas",
     "py_header.*",
+    "pynanovna",
     "pyspcm",
     "spirack",
     "zhinst.*",
@@ -108,7 +109,8 @@ module = [
     "serial.*",
     "scipy.*",
     "nanonis_tramea",
-    "windfreak"
+    "windfreak",
+    "MultiPyVu"
 ]
 ignore_missing_imports = true
 
