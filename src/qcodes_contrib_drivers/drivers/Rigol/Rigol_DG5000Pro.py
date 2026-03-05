@@ -220,21 +220,34 @@ class RigolDG5000ProChannel(InstrumentChannel):
         """Generate trigger event for the specified channel"""
         self.write(f":TRIGger{self.channel}")
 
-    def source_apply_ramp(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+    def source_apply_ramp(
+            self,
+            frequency: float,
+            amplitude: float,
+            offset: float,
+            phase: float,
+            symmetry: Union[float, None] = None,
+    ) -> None:
         """Sets the specified channel to output a ramp
 
-        Sets the specified channel to output a ramp (with the maximum symmetry available at the current frequency)
-        with the specified frequency, amplitude, offset, and phase.
+        Sets the specified channel to output a ramp with the specified frequency,
+        amplitude, offset, and phase. When symmetry is supplied, ramp symmetry is
+        explicitly set in percent.
 
         Args:
-                frequency:
-                amplitude:
-                offset:
-                phase:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+                symmetry: Ramp symmetry in percent (0 to 100). Optional.
         """
         Numbers(*self.root_instrument.frequency_range["ramp"]).validate(frequency)
         Numbers(-360, 360).validate(phase)
         self.write(f":SOURce{self.channel}:APPLy:RAMP {frequency},{amplitude},{offset},{phase}")
+
+        if symmetry is not None:
+            Numbers(0, 100).validate(symmetry)
+            self.write(f":SOURce{self.channel}:FUNCtion:RAMP:SYMMetry {symmetry}")
 
     def source_apply_sinusoid(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
         """Sets the specified channel to output a sine wave
