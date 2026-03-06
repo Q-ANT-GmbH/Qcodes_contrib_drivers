@@ -1,0 +1,660 @@
+Introduction:
+
+The MPM-220 is a multi-port optical power meter for measuring optical
+characteristic of optical devices. The MPM-220 is composed of up to five
+Measurement Modules (MM). There are six types of measurement modules:
+MPM-211, MPM-212, MPM-213, MPM-215 and MPM-217.
+The MPM-211 MM has 4 optical power measuring ports (4 channels). The MPM-
+212 has 2 optical power measuring ports and 2 analog output ports and outputs
+analog voltage signal proportional the optical power per each port. The MPM-
+213 has 4 electrical current measuring ports (4 channels), and is used the same
+as MPM-211. The MPM-215 MM has 4 optical power measuring ports (4
+channels) and enables optical power measurement for each port with a high
+dynamic range of 60 dB or more. The MPM-217 has four optical power
+measurement ports, allowing for power measurement at each port.
+Additionally, by replacing the included adapter panel, it is possible to measure
+with multiple optical connectors (FC/SC/LC).
+However, the MPM-215 cannot be used the same as other modules (MPM-
+211/212/213/217) and it does not support the measurement range switching
+function.
+
+5.4.3. System-related commands
+
+1. *IDN?
+    Description:
+        Identification Query
+    Syntax:
+        *IDN?
+    Response:
+        SANTEC,MPM-220,zzzzzzzz,Ver. x.y
+        zzzzzzzz is serial number of main frame, and Ver. x.y is firmware version.
+    Example:
+        *IDN?
+        Response: SANTEC,MPM-220,00000000,Ver.2.0
+
+2. ERR?
+    Description:
+        Check Error information.
+    Syntax:
+        ERR?
+    Response:
+        <value>,<string>
+        <value>: Error Code
+        <string>: Summary of content for Error
+        Please refer to "5.4.5 ERR?"
+    Example:
+        ERR?
+        Response: 0, "No Error"
+
+3. IDIS?
+    Description:
+        Check recognition of MM (Module) for MPM-220.
+    Syntax:
+        IDIS?
+    Response:
+        <value0>,<value1>,<value2>,<value3>,<value4>
+        value0: Module0
+        value1: Module1
+        value2: Module2
+        value3: Module3
+        value4: Module4
+        0: Module is not recognized.
+        1: Module is recognized.
+    Example:
+        IDIS?
+        Response: 1,1,1,1,1
+
+4. MMVER?
+    Description:
+        Identification query of a module type
+    Syntax:
+        MMVER?<wsp><module>
+    Parameters:
+        <module>: 0,1,2,3,4
+    Response:
+        <value0>,<value1>,<value2>,<value3>
+        value0: Company (Santec)
+        value1: Product code (MPM-211, MPM-212, MPM-213, MPM-215, MPM-217)
+        value2: Serial number
+        value3: Firmware version
+    Example:
+        MMVER? 0
+        Response: Santec,MPM-211,00000000M211,Ver1.11
+
+5. ADDR
+    Description:
+        Set up GPIB Address
+    Syntax:
+        ADDR<wsp><value>
+    Parameters:
+        <value>: 1 ~ 31
+    Default:
+        16
+    Example:
+        ADDR 16
+
+6. ADDR?
+    Description:
+        Check GPIB Address.
+    Syntax:
+        ADDR?
+    Response:
+        <value>
+    Example:
+        ADDR?
+        Response: 16
+
+7. GW
+    Description:
+        Set up Gateway Address.
+    Syntax:
+        GW<wsp><www.xxx.yyy.zzz>
+    Parameters:
+        <www.xxx.yyy.zzz>: 0 ~ 255 (each octet)
+    Default:
+        192.168.1.254
+    Example:
+        GW 192.168.1.254
+
+8. GW?
+    Description:
+        Check Gateway Address.
+    Syntax:
+        GW?
+    Response:
+        <www.xxx.yyy.zzz>
+    Example:
+        GW?
+        Response: 192.168.1.254
+
+9. SUBNET
+    Description:
+        Set up Subnet Mask.
+    Syntax:
+        SUBNET<wsp><www.xxx.yyy.zzz>
+    Parameters:
+        <www.xxx.yyy.zzz>: 0 ~ 255 (each octet)
+    Default:
+        255.255.255.0
+    Example:
+        SUBNET 255.255.255.0
+
+10. SUBNET?
+    Description:
+        Check Subnet Mask.
+    Syntax:
+        SUBNET?
+    Response:
+        <www.xxx.yyy.zzz>
+    Example:
+        SUBNET?
+        Response: 255.255.255.0
+
+11. IP
+    Description:
+        Set up IP Address.
+    Syntax:
+        IP<wsp><www.xxx.yyy.zzz>
+    Parameters:
+        <www.xxx.yyy.zzz>: 0 ~ 255 (each octet)
+    Default:
+        192.168.1.161
+    Example:
+        IP 192.168.1.161
+
+12. IP?
+    Description:
+        Check IP Address.
+    Syntax:
+        IP?
+    Response:
+        <www.xxx.yyy.zzz>
+    Example:
+        IP?
+        Response: 192.168.1.161
+
+5.4.4. Measurement-related commands
+
+1. TRIG
+    Description:
+        If measuring mode is 'CONSTx', set measuring trigger source.
+    Syntax:
+        TRIG<wsp><value>
+    Parameters:
+        <value>:
+            0 – Internal trigger (generates trigger every 10 ms)
+            1 – External trigger
+    Default:
+        1
+    Example:
+        TRIG 1
+
+2. TRIG?
+    Description:
+        If measuring mode is 'CONSTx', check measuring trigger.
+    Syntax:
+        TRIG?
+    Response:
+        <value>
+        0 – Internal trigger
+        1 – External trigger
+    Example:
+        TRIG?
+        Response: 1
+
+3. WMOD
+    Description:
+        Set measurement mode. (The MPM-215 supports only "CONST2" and "SWEEP2".)
+    Syntax:
+        WMOD<wsp><value>
+    Parameters:
+        <value>:
+            "CONST1"  => Constant Wavelength, No Auto Gain, SME mode
+            "SWEEP1"  => Sweep Wavelength, No Auto Gain, SME mode
+            "CONST2"  => Constant Wavelength, Auto Gain, SME mode
+            "SWEEP2"  => Sweep Wavelength, Auto Gain, SME mode
+            "FREERUN" => Constant Wavelength, No Auto Gain, First Hardware Trigger Start (CEM mode)
+    Default:
+        CONST1
+    Example:
+        WMOD CONST1
+
+4. WMOD?
+    Description:
+        Check measurement mode. (The MPM-215 supports only "CONST2" and "SWEEP2".)
+    Syntax:
+        WMOD?
+    Response:
+        <value>
+        See WMOD parameter list above.
+    Example:
+        WMOD?
+        Response: CONST1
+
+5. WAV
+    Description:
+        Set wavelength for Constant wavelength Measurement Mode (CONST1, CONST2, READ).
+    Syntax:
+        WAV<wsp><value>
+    Parameters:
+        <value>: 1250.000 ~ 1630.000 (real number)
+    Unit:
+        nm
+    Default:
+        1550
+    Example:
+        WAV 1550
+
+6. WAV?
+    Description:
+        Check wavelength for Constant wavelength Measurement Mode (CONST1, CONST2, READ).
+    Syntax:
+        WAV?
+    Response:
+        <value> (nm)
+    Example:
+        WAV?
+        Response: 1550
+
+7. DWAV
+    Description:
+        Set wavelength for Constant wavelength Measurement Mode for each channel.
+    Syntax:
+        DWAV<wsp><module>,<channel>,<value>
+    Parameters:
+        <module>: Module 0,1,2,3,4,5 (when 5, all modules and channels set to same wavelength)
+        <channel>: Channel 1,2,3,4
+        <value>: 1250.000 ~ 1630.000 (real number)
+    Unit:
+        nm
+    Default:
+        1550
+    Example:
+        DWAV 0,1,1550
+
+8. DWAV?
+    Description:
+        Check wavelength for Constant wavelength Measurement Mode for each channel.
+    Syntax:
+        DWAV?<wsp><module>,<channel>
+    Parameters:
+        <module>: 0,1,2,3,4
+        <channel>: 1,2,3,4
+    Response:
+        <value> (1250.000 ~ 1630.000, nm)
+    Example:
+        DWAV? 0,1
+        Response: 1550
+
+9. WSET
+    Description:
+        Set up sweep parameters for Sweep Wavelength Measurement Mode (SWEEP1, SWEEP2).
+        Data points are calculated from WSET and can be checked with LOGN?.
+    Syntax:
+        WSET<wsp><start>,<stop>,<step>
+    Parameters:
+        <start>: 1250.000 ~ 1630.000
+        <stop>: 1250.000 ~ 1630.000
+        <step>: 0.001 ~ 10
+    Unit:
+        nm
+    Note:
+        Stop wavelength = Start wavelength + step wavelength
+    Default:
+        start: 1250, stop: 1630, step: 0.005
+    Example:
+        WSET 1520,1570,0.05
+
+10. WSET?
+    Description:
+        Check sweep parameters for Sweep Wavelength Measurement Mode (SWEEP1, SWEEP2).
+    Syntax:
+        WSET?
+    Response:
+        <value1>,<value2>,<value3>
+        value1: Start wavelength (1250.000 ~ 1630.000)
+        value2: Stop wavelength (1250.000 ~ 1630.000)
+        value3: Step wavelength (0.001 ~ 10)
+    Example:
+        WSET?
+        Response: 1520,1570,0.05
+
+11. SPE
+    Description:
+        Set Wavelength Sweep Speed (SWEEP1, SWEEP2). Averaging time is set automatically by speed and WSET step.
+    Syntax:
+        SPE<wsp><value>
+    Parameters:
+        <value>: Sweep speed 0.001 ~ 200
+    Unit:
+        nm/sec
+    Default:
+        1
+    Example:
+        SPE 1
+
+12. SPE?
+    Description:
+        Check Wavelength Sweep Speed (SWEEP1, SWEEP2).
+    Syntax:
+        SPE?
+    Response:
+        <value> (nm/sec)
+    Example:
+        SPE?
+        Response: 1
+
+13. LEV
+    Description:
+        Set TIA Gain for CONST1, SWEEP1, FREERUN, AUTO1 measuring modes.
+        Refer to 5.4.7 for relation between gain setting and input power.
+        This command is not available for the MPM-215.
+    Syntax:
+        LEV<wsp><value>
+    Parameters:
+        <value>: 1,2,3,4,5
+        (MPM-213 current meter: available range 1 to 4)
+    Default:
+        5
+    Example:
+        LEV 5
+
+14. LEV?
+    Description:
+        Check TIA Gain for CONST1, SWEEP1, FREERUN, AUTO1 measuring modes.
+        This command is not available for the MPM-215.
+    Syntax:
+        LEV?
+    Response:
+        <value> (1,2,3,4,5)
+    Example:
+        LEV?
+        Response: 5
+
+15. DLEV
+    Description:
+        Set TIA Gain for each channel (CONST1, SWEEP1, FREERUN, AUTO1).
+        Refer to 5.4.7 for relation between gain setting and input power.
+        This command is not available for the MPM-215.
+    Syntax:
+        DLEV<wsp><module>,<channel>,<gain>
+    Parameters:
+        <module>: 0,1,2,3,4,5 (when 5, all modules and channels set same)
+        <channel>: 1,2,3,4
+        <gain>: 1,2,3,4,5 (MPM-213: 1 to 4)
+    Default:
+        gain: 5
+    Example:
+        DLEV 0,1,5
+
+16. DLEV?
+    Description:
+        Check TIA Gain for each channel.
+        This command is not available for the MPM-215.
+    Syntax:
+        DLEV?<wsp><module>,<channel>
+    Parameters:
+        <module>: 0,1,2,3,4
+        <channel>: 1,2,3,4
+    Response:
+        <value> (1,2,3,4,5)
+    Example:
+        DLEV? 0,1
+        Response: 5
+
+17. AVG
+    Description:
+        Set Average Time.
+    Syntax:
+        AVG<wsp><value>
+    Parameters:
+        <value>: 0.01 ~ 10000.00
+    Unit:
+        ms
+    Resolution:
+        0.01 (10 µs)
+    Default:
+        5
+    Example:
+        AVG 5
+
+18. AVG?
+    Description:
+        Check Average Time.
+    Syntax:
+        AVG?
+    Response:
+        <value> (0.01 ~ 10000.00 ms, resolution 0.01)
+    Example:
+        AVG?
+        Response: 5
+
+19. FGSAVG
+    Description:
+        Set Average Time (same operation as "AVG").
+    Syntax:
+        FGSAVG<wsp><value>
+    Parameters:
+        <value>: 0.01 ~ 10000.00
+    Unit:
+        ms
+    Resolution:
+        0.01 (10 µs)
+    Default:
+        0.1
+    Example:
+        FGSAVG 0.1
+
+20. FGSAVG?
+    Description:
+        Check Average Time (same operation as "AVG?").
+    Syntax:
+        FGSAVG?
+    Response:
+        <value> (0.01 ~ 10000.00 ms, resolution 0.01)
+    Example:
+        FGSAVG?
+        Response: 0.1
+
+21. UNIT
+    Description:
+        Set measuring unit of optical power or electrical current.
+    Syntax:
+        UNIT<wsp><value>
+    Parameters:
+        <value>:
+            0 – dBm, dBmA
+            1 – mW, mA
+    Default:
+        0
+    Example:
+        UNIT 0
+
+22. UNIT?
+    Description:
+        Check measuring unit of optical power or electrical current.
+    Syntax:
+        UNIT?
+    Response:
+        <value>
+        0 – dBm, dBmA
+        1 – mW, mA
+    Example:
+        UNIT?
+        Response: 0
+
+23. AUTO
+    Description:
+        Set the power range (Auto or Manual). Applicable to READ? command.
+    Syntax:
+        AUTO<wsp><value>
+    Parameters:
+        <value>:
+            0 – Manual range
+            1 – Auto range
+    Default:
+        1
+    Example:
+        AUTO 1
+
+24. AUTO?
+    Description:
+        Check the power range (Auto or Manual). Applicable to READ? command.
+    Syntax:
+        AUTO?
+    Response:
+        0 – Manual range
+        1 – Auto range
+    Example:
+        AUTO?
+        Response: 1
+
+25. DAUTO
+    Description:
+        Set the power range (Auto or Manual) for each channel. Applicable to READ? command.
+    Syntax:
+        DAUTO<wsp><module>,<value>
+    Parameters:
+        <module>: 0,1,2,3,4,5 (when 5, all modules and channels set same)
+        <value>: Range mode (0 – Manual, 1 – Auto)
+    Default:
+        1
+    Example:
+        DAUTO 0,1
+
+26. DAUTO?
+    Description:
+        Check the power range (Auto or Manual) for each channel. Applicable to READ? command.
+    Syntax:
+        DAUTO?<wsp><module>
+    Response:
+        <value>: Range mode (0 – Manual, 1 – Auto)
+    Example:
+        DAUTO? 0
+        Response: 1
+
+27. READ?
+    Description:
+        Execute optical power or electrical current measurement and return the result. If sent during logging mode, logging stops.
+    Syntax:
+        READ?<wsp><module>
+    Parameters:
+        <module>: Module Number: 0,1,2,3,4
+    Response:
+        <value1>,<value2>,<value3>,<value4>
+        value1: Optical power of port 1
+        value2: Optical power of port 2
+        value3: Optical power of port 3
+        value4: Optical power of port 4
+    Example:
+        READ?
+        Response: -20.123,-20.454,-20.764,-20.644
+
+28. CWAV?
+    Description:
+        Check the wavelength that should be calibrated. Refer to 5.4.6 for wavelength compensation method.
+    Syntax:
+        CWAV?<wsp><module>,<index>
+    Parameters:
+        <module>: 0,1,2,3,4
+        <index>: Wavelength set order index (1..20)
+    Response:
+        <value> (nm)
+    Example:
+        CWAV? 0,1
+        Response: 1250
+
+29. CWAVPO?
+    Description:
+        Power calibration value for CWAV? command index.
+    Unit:
+        dB
+    Syntax:
+        CWAVPO?<wsp><module>,<ch>,<index>
+    Parameters:
+        <module>: 0,1,2,3,4 (integer)
+        <ch>: Port number: 1,2,3,4 (integer)
+        <index>: Wavelength set order index (1..20)
+    Response:
+        <optical power offset> (float)
+    Example:
+        CWAVPO? 0,1,1
+        Response: 0.904640
+
+30. MEAS
+    Description:
+        Command to start measuring.
+    Syntax:
+        MEAS
+    Example:
+        MEAS
+
+31. STOP
+    Description:
+        Command to stop measuring.
+    Syntax:
+        STOP
+    Example:
+        STOP
+
+32. STAT?
+    Description:
+        Check measuring status.
+    Syntax:
+        STAT?
+    Response:
+        <value1>,<value2>
+        <value1>: Status
+            0 – Measuring is still in process
+            1 – Measurement completed
+           -1 – Measurement was forcibly stopped
+        <value2>: Measured logging points
+    Example:
+        STAT?
+        Response: 1,100
+
+33. LOGN
+    Description:
+        Set measurement data points in CONST1/CONST2/FREERUN measuring modes. Refer to 5.5.3.
+    Syntax:
+        LOGN<wsp><value>
+    Parameters:
+        <value>: 1 ~ 1,000,000
+    Default:
+        1
+    Example:
+        LOGN 100
+
+34. LOGN?
+    Description:
+        Check measurement data points. Refer to 5.5.3.
+    Syntax:
+        LOGN?
+    Response:
+        <value> (1 ~ 1,000,000)
+    Example:
+        LOGN?
+        Response: 100
+
+35. LOGG?
+    Description:
+        Read out logging data. (Not available for RS-232 communication.)
+    Syntax:
+        LOGG?<wsp><module>,<port>
+    Parameters:
+        <module>: module number
+        <port>: port number
+    Response:
+        Please refer to '5.5.4 LOGG?' for detailed information.
+    Example:
+        LOGG?
+        Response: Please refer to '5.5.4 LOGG?' for detail information.
+
+36. ZERO
+    Description:
+        Run zeroing to remove electrical DC offset before measuring optical power. Be careful with incident light into the optic port. For MPM-213 (current meter), remove the BNC cable from the MPM-213. This action takes about 3 seconds; wait at least 3 seconds before sending other commands.
+    Syntax:
+        ZERO
+    Example:
+        ZERO
+
