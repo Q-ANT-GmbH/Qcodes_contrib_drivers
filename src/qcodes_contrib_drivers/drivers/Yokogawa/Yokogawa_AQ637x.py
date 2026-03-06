@@ -4,12 +4,11 @@ Provides instrument-level driver, trace/channel abstraction and data retrieval h
 """
 
 import logging
-import numpy as np
-
 from typing import TYPE_CHECKING
 
-from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument, \
-    ChannelList
+import numpy as np
+from qcodes import ChannelTuple
+from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument
 from qcodes.parameters import Parameter, create_on_off_val_mapping, ParamRawDataType
 from qcodes.validators import Enum, Ints, Strings
 
@@ -188,13 +187,15 @@ class YokogawaAQ637x(VisaInstrument):
         elif self.model not in self.MODELS:
             raise KeyError("Model code " + self.model + " is not recognized")
 
-        # Create channels (called traces for OSA)
-        traces = ChannelList(self, "ch", YokogawaAQ637xChannel)
-        for ch_letter in ('A', 'B', 'C', 'D', 'E', 'F', 'G'):
-            ch = YokogawaAQ637xChannel(self, f"TR{ch_letter}", f"TR{ch_letter}")
-            setattr(self, f"TR{ch_letter}", ch)
-            traces.append(ch)
-        self.traces = traces.to_channel_tuple()
+        # Create channels (called traces for OSA) with explicit properties for autocompletion
+        self.TRA = YokogawaAQ637xChannel(self, "TRA", "TRA")
+        self.TRB = YokogawaAQ637xChannel(self, "TRB", "TRB")
+        self.TRC = YokogawaAQ637xChannel(self, "TRC", "TRC")
+        self.TRD = YokogawaAQ637xChannel(self, "TRD", "TRD")
+        self.TRE = YokogawaAQ637xChannel(self, "TRE", "TRE")
+        self.TRF = YokogawaAQ637xChannel(self, "TRF", "TRF")
+        self.TRG = YokogawaAQ637xChannel(self, "TRG", "TRG")
+        self.traces = ChannelTuple(self, "ch", YokogawaAQ637xChannel, ("TRA", "TRB", "TRC", "TRD", "TRE", "TRF", "TRG"))
         """Instrument traces (aka channels)"""
 
         ## Common Commands
