@@ -1,4 +1,3 @@
-import math
 import random
 
 import numpy as np
@@ -49,10 +48,10 @@ def test_acquire_mdepth(driver):
         assert driver.acquire_mdepth() == key
 
 
-def test_acquire_type(driver):
-    for mode in ["normal", "averages", "peak", "high_resolution"]:
-        driver.acquire_type(mode)
-        assert driver.acquire_type() == mode
+@pytest.mark.parametrize("acquire_mode", ["normal", "averages", "peak", "high_resolution"])
+def test_acquire_type(driver, acquire_mode):
+    driver.acquire_type(acquire_mode)
+    assert driver.acquire_type() == acquire_mode
 
 
 def test_acquire_srate(driver):
@@ -103,35 +102,25 @@ def test_timebase_delay_scale(driver):
 def test_timebase_offset(driver):
     val = random.random()
     driver.timebase_offset(val)
-    assert math.isclose(driver.timebase_offset(), val, rel_tol=1e-6)
+    assert driver.timebase_offset() == pytest.approx(val, rel=1e-6)
 
 
 def test_timebase_scale(driver):
     val = 1e-3 * random.random()
     driver.timebase_scale(val)
-    assert math.isclose(driver.timebase_scale(), val, rel_tol=5e-2)
+    assert driver.timebase_scale() == pytest.approx(val, rel=5e-2)
 
 
-def test_timebase_mode(driver):
-    driver.timebase_mode("roll")
-    assert driver.timebase_mode() == "roll"
-    driver.timebase_mode("xy")
-    assert driver.timebase_mode() == "xy"
-    driver.timebase_mode("yt")
-    assert driver.timebase_mode() == "yt"
+@pytest.mark.parametrize("mode", ["roll", "xy", "yt"])
+def test_timebase_mode(driver, mode):
+    driver.timebase_mode(mode)
+    assert driver.timebase_mode() == mode
 
 
-def test_timebase_href_mode(driver):
-    driver.timebase_href_mode("center")
-    assert driver.timebase_href_mode() == "center"
-    driver.timebase_href_mode("left_border")
-    assert driver.timebase_href_mode() == "left_border"
-    driver.timebase_href_mode("right_border")
-    assert driver.timebase_href_mode() == "right_border"
-    driver.timebase_href_mode("trigger")
-    assert driver.timebase_href_mode() == "trigger"
-    driver.timebase_href_mode("user")
-    assert driver.timebase_href_mode() == "user"
+@pytest.mark.parametrize("href_mode", ["center", "left_border", "right_border", "trigger", "user"])
+def test_timebase_href_mode(driver, href_mode):
+    driver.timebase_href_mode(href_mode)
+    assert driver.timebase_href_mode() == href_mode
 
 
 def test_timebase_href_position(driver):
@@ -159,28 +148,28 @@ def test_trigger_mode(driver):
         assert driver.trigger_mode() == mode
 
 
-def test_trigger_coupling(driver):
-    for mode in ["ac", "dc", "lfreject", "hfreject"]:
-        driver.trigger_coupling(mode)
-        assert driver.trigger_coupling() == mode
+@pytest.mark.parametrize("coupling", ["ac", "dc", "lfreject", "hfreject"])
+def test_trigger_coupling(driver, coupling):
+    driver.trigger_coupling(coupling)
+    assert driver.trigger_coupling() == coupling
 
 
-def test_trigger_sweep(driver):
-    for mode in ["auto", "normal", "single"]:
-        driver.trigger_sweep(mode)
-        assert driver.trigger_sweep() == mode
+@pytest.mark.parametrize("sweep", ["auto", "normal", "single"])
+def test_trigger_sweep(driver, sweep):
+    driver.trigger_sweep(sweep)
+    assert driver.trigger_sweep() == sweep
 
 
 def test_trigger_holdoff(driver):
     driver.trigger_holdoff(8e-9)
-    assert math.isclose(driver.trigger_holdoff(), 8e-9, rel_tol=1e-6)
+    assert driver.trigger_holdoff() == pytest.approx(8e-9, rel=1e-6)
 
     driver.trigger_holdoff(10)
-    assert math.isclose(driver.trigger_holdoff(), 10.0, rel_tol=1e-6)
+    assert driver.trigger_holdoff() == pytest.approx(10.0, rel=1e-6)
 
     val = random.uniform(1e-6, 1)
     driver.trigger_holdoff(val)
-    assert math.isclose(driver.trigger_holdoff(), val, rel_tol=1e-6)
+    assert driver.trigger_holdoff() == pytest.approx(val, rel=1e-6)
 
 
 def test_trigger_noise_reject(driver):
@@ -194,81 +183,74 @@ def test_trigger_ext_delay(driver):
     driver.trigger_edge_source("ext")
 
     driver.trigger_ext_delay(-500000)
-    assert math.isclose(driver.trigger_ext_delay(), -500000, rel_tol=1e-6)
+    assert driver.trigger_ext_delay() == pytest.approx(-500000, rel=1e-6)
     driver.trigger_ext_delay(499990)
-    assert math.isclose(driver.trigger_ext_delay(), 499990, rel_tol=1e-6)
+    assert driver.trigger_ext_delay() == pytest.approx(499990, rel=1e-6)
     val = random.uniform(-500000, 500000)
     driver.trigger_ext_delay(val)
-    assert math.isclose(driver.trigger_ext_delay(), val, abs_tol=10.0)
+    assert driver.trigger_ext_delay() == pytest.approx(val, abs=10.0)
 
 
-def test_trigger_edge_source(driver):
-    for src in ["ch1", "ch2", "ch3", "ch4", "acline", "ext"]:
-        driver.trigger_edge_source(src)
-        assert driver.trigger_edge_source() == src
+@pytest.mark.parametrize("source", ["ch1", "ch2", "ch3", "ch4", "acline", "ext"])
+def test_trigger_edge_source(driver, source):
+    driver.trigger_edge_source(source)
+    assert driver.trigger_edge_source() == source
 
 
-def test_trigger_edge_slope(driver):
-    for slope in ["positive", "negative", "rfall"]:
-        driver.trigger_edge_slope(slope)
-        assert driver.trigger_edge_slope() == slope
+@pytest.mark.parametrize("slope", ["positive", "negative", "rfall"])
+def test_trigger_edge_slope(driver, slope):
+    driver.trigger_edge_slope(slope)
+    assert driver.trigger_edge_slope() == slope
 
 
-def test_trigger_pulse_source(driver):
-    for src in ["ch1", "ch2", "ch3", "ch4"]:
-        driver.trigger_pulse_source(src)
-        assert driver.trigger_pulse_source() == src
+@pytest.mark.parametrize("source", ["ch1", "ch2", "ch3", "ch4"])
+def test_trigger_pulse_source(driver, source):
+    driver.trigger_pulse_source(source)
+    assert driver.trigger_pulse_source() == source
 
 
-def test_trigger_pulse_when(driver):
-    for mode in ["greater", "less", "gless"]:
-        driver.trigger_pulse_when(mode)
-        assert driver.trigger_pulse_when() == mode
+@pytest.mark.parametrize("when_mode", ["greater", "less", "gless"])
+def test_trigger_pulse_when(driver, when_mode):
+    driver.trigger_pulse_when(when_mode)
+    assert driver.trigger_pulse_when() == when_mode
 
 
 def test_trigger_pulse_uwidth(driver):
     driver.trigger_pulse_uwidth(2e-6)
-    assert math.isclose(driver.trigger_pulse_uwidth(), 2e-6, rel_tol=1e-6)
+    assert driver.trigger_pulse_uwidth() == pytest.approx(2e-6, rel=1e-6)
     driver.trigger_pulse_uwidth(1)
-    assert math.isclose(driver.trigger_pulse_uwidth(), 1.0, rel_tol=1e-6)
+    assert driver.trigger_pulse_uwidth() == pytest.approx(1.0, rel=1e-6)
     val = random.uniform(1e-6, 0.1)
     driver.trigger_pulse_uwidth(val)
-    assert math.isclose(driver.trigger_pulse_uwidth(), val, rel_tol=1e-6)
+    assert driver.trigger_pulse_uwidth() == pytest.approx(val, rel=1e-6)
 
 
 def test_trigger_pulse_lwidth(driver):
     driver.trigger_pulse_lwidth(1e-6)
-    assert math.isclose(driver.trigger_pulse_lwidth(), 1e-6, rel_tol=1e-6)
+    assert driver.trigger_pulse_lwidth() == pytest.approx(1e-6, rel=1e-6)
     driver.trigger_pulse_lwidth(1e-3)
-    assert math.isclose(driver.trigger_pulse_lwidth(), 1e-3, rel_tol=1e-6)
+    assert driver.trigger_pulse_lwidth() == pytest.approx(1e-3, rel=1e-6)
     val = random.uniform(1e-9, 1e-2)
     driver.trigger_pulse_lwidth(val)
-    assert math.isclose(driver.trigger_pulse_lwidth(), val, rel_tol=1e-6)
+    assert driver.trigger_pulse_lwidth() == pytest.approx(val, rel=1e-6)
 
 
-def test_waveform_source(driver):
-    sources = ("CHAN1", "CHAN2", "CHAN3", "CHAN4", "MATH1", "MATH2", "MATH3", "MATH4")
-    for source in sources:
-        driver.waveform_source(source)
-        assert driver.waveform_source() == source
+@pytest.mark.parametrize("source", ("CHAN1", "CHAN2", "CHAN3", "CHAN4", "MATH1", "MATH2", "MATH3", "MATH4"))
+def test_waveform_source(driver, source):
+    driver.waveform_source(source)
+    assert driver.waveform_source() == source
 
 
-def test_waveform_mode(driver):
-    driver.waveform_mode("normal")
-    assert driver.waveform_mode() == "normal"
-    driver.waveform_mode("maximum")
-    assert driver.waveform_mode() == "maximum"
-    driver.waveform_mode("raw")
-    assert driver.waveform_mode() == "raw"
+@pytest.mark.parametrize("mode", ["normal", "maximum", "raw"])
+def test_waveform_mode(driver, mode):
+    driver.waveform_mode(mode)
+    assert driver.waveform_mode() == mode
 
 
-def test_waveform_format(driver):
-    driver.waveform_format("ascii")
-    assert driver.waveform_format() == "ascii"
-    driver.waveform_format("word")
-    assert driver.waveform_format() == "word"
-    driver.waveform_format("byte")
-    assert driver.waveform_format() == "byte"
+@pytest.mark.parametrize("fmt", ["ascii", "word", "byte"])
+def test_waveform_format(driver, fmt):
+    driver.waveform_format(fmt)
+    assert driver.waveform_format() == fmt
 
 
 def test_waveform_points(driver):
@@ -298,17 +280,16 @@ def test_waveform_preamble(driver):
     print(preample)
 
 
-def test_ch_bw(driver):
-    driver.channels.bandwidth_limit("OFF")
-    assert all(array(driver.channels.bandwidth_limit()) == "OFF")
-    driver.channels.bandwidth_limit("20M")
-    assert all(array(driver.channels.bandwidth_limit()) == "20M")
+@pytest.mark.parametrize("bw_limit", ["OFF", "20M"])
+def test_ch_bw(driver, bw_limit):
+    driver.channels.bandwidth_limit(bw_limit)
+    assert all(array(driver.channels.bandwidth_limit()) == bw_limit)
 
 
-def test_ch_coupling(driver):
-    for coupling in ("AC", "DC", "GND"):
-        driver.channels.coupling(coupling)
-        assert all(array(driver.channels.coupling()) == coupling)
+@pytest.mark.parametrize("coupling", ("AC", "DC", "GND"))
+def test_ch_coupling(driver, coupling):
+    driver.channels.coupling(coupling)
+    assert all(array(driver.channels.coupling()) == coupling)
 
 
 def test_ch_display(driver):
@@ -343,11 +324,10 @@ def test_ch_scale(driver):
     assert all(np.isclose(array(driver.channels.scale()), scale, atol=0.01))
 
 
-def test_ch_impedance(driver):
-    driver.channels.impedance('50 Ohm')
-    assert all(array(driver.channels.impedance()) == '50 Ohm')
-    driver.channels.impedance('1 MOhm')
-    assert all(array(driver.channels.impedance()) == '1 MOhm')
+@pytest.mark.parametrize("impedance", ['50 Ohm', '1 MOhm'])
+def test_ch_impedance(driver, impedance):
+    driver.channels.impedance(impedance)
+    assert all(array(driver.channels.impedance()) == impedance)
 
 
 def test_ch_probe(driver):
@@ -359,10 +339,10 @@ def test_ch_probe(driver):
         assert all(array(driver.channels.probe()) == v)
 
 
-def test_ch_units(driver):
-    for unit in ("volt", "watt", "ampere", "unknown"):
-        driver.channels.units(unit)
-        assert all(array(driver.channels.units()) == unit)
+@pytest.mark.parametrize("unit", ("volt", "watt", "ampere", "unknown"))
+def test_ch_units(driver, unit):
+    driver.channels.units(unit)
+    assert all(array(driver.channels.units()) == unit)
 
 
 def test_ch_vernier(driver):

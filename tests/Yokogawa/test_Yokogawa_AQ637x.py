@@ -1,5 +1,4 @@
 import pytest
-import math
 
 from qcodes_contrib_drivers.drivers.Yokogawa.Yokogawa_AQ637x import YokogawaAQ637x
 
@@ -65,10 +64,10 @@ def test_wait(driver):
 ## Instrument specific commands
 # Display Sub System Commands
 
-def test_display_color(driver):
-    for mode in range(0, 6):
-        driver.display_color(mode)
-        assert driver.display_color() == mode
+@pytest.mark.parametrize("mode", range(0, 6))
+def test_display_color(driver, mode):
+    driver.display_color(mode)
+    assert driver.display_color() == mode
 
 
 def test_display_enabled(driver):
@@ -78,16 +77,16 @@ def test_display_enabled(driver):
     assert driver.display_enabled() is True
 
 
-def test_display_overview_position(driver):
-    for mode in ["OFF", "LEFT", "RIGHT"]:
-        driver.display_overview_position(mode)
-        assert driver.display_overview_position() == mode
+@pytest.mark.parametrize("mode", ["OFF", "LEFT", "RIGHT"])
+def test_display_overview_position(driver, mode):
+    driver.display_overview_position(mode)
+    assert driver.display_overview_position() == mode
 
 
-def test_display_overview_size(driver):
-    for size in ["LARGE", "SMALL"]:
-        driver.display_overview_size(size)
-        assert driver.display_overview_size() == size
+@pytest.mark.parametrize("size", ["LARGE", "SMALL"])
+def test_display_overview_size(driver, size):
+    driver.display_overview_size(size)
+    assert driver.display_overview_size() == size
 
 
 def test_display_split(driver):
@@ -168,21 +167,21 @@ def test_display_trace_x_stop(driver):
 
 def test_display_trace_y_nmask(driver):
     driver.display_trace_y_nmask(-999)
-    assert math.isclose(driver.display_trace_y_nmask(), -999.0, rel_tol=1e-6)
+    assert driver.display_trace_y_nmask() == pytest.approx(-999.0, rel=1e-6)
     driver.display_trace_y_nmask(-40)
-    assert math.isclose(driver.display_trace_y_nmask(), -40.0, rel_tol=1e-6)
+    assert driver.display_trace_y_nmask() == pytest.approx(-40.0, rel=1e-6)
 
 
-def test_display_trace_y_nmask_type(driver):
-    for mode in ["VERTICAL", "HORIZONTAL"]:
-        driver.display_trace_y_nmask_type(mode)
-        assert driver.display_trace_y_nmask_type() == mode
+@pytest.mark.parametrize("mode", ["VERTICAL", "HORIZONTAL"])
+def test_display_trace_y_nmask_type(driver, mode):
+    driver.display_trace_y_nmask_type(mode)
+    assert driver.display_trace_y_nmask_type() == mode
 
 
-def test_display_trace_y_dnumber(driver):
-    for n in (8, 10, 12):
-        driver.display_trace_y_dnumber(n)
-        assert driver.display_trace_y_dnumber() == n
+@pytest.mark.parametrize("n", (8, 10, 12))
+def test_display_trace_y_dnumber(driver, n):
+    driver.display_trace_y_dnumber(n)
+    assert driver.display_trace_y_dnumber() == n
 
 
 def test_display_trace_y1_blevel(driver):
@@ -211,16 +210,16 @@ def test_display_trace_y1_rposition(driver):
     assert driver.display_trace_y1_rposition() == 10
 
 
-def test_display_trace_y1_spacing(driver):
-    for mode in ["LOG", "LINEAR"]:
-        driver.display_trace_y1_spacing(mode)
-        assert driver.display_trace_y1_spacing() == mode
+@pytest.mark.parametrize("mode", ["LOG", "LINEAR"])
+def test_display_trace_y1_spacing(driver, mode):
+    driver.display_trace_y1_spacing(mode)
+    assert driver.display_trace_y1_spacing() == mode
 
 
-def test_display_trace_y1_unit(driver):
-    for unit in ["DBM", "W", "DBM_PER_NM", "W_PER_NM"]:
-        driver.display_trace_y1_unit(unit)
-        assert driver.display_trace_y1_unit() == unit
+@pytest.mark.parametrize("unit", ["DBM", "W", "DBM_PER_NM", "W_PER_NM"])
+def test_display_trace_y1_unit(driver, unit):
+    driver.display_trace_y1_unit(unit)
+    assert driver.display_trace_y1_unit() == unit
 
 
 def test_display_trace_y2_auto(driver):
@@ -262,16 +261,16 @@ def test_display_trace_y2_sminimum(driver):
     assert driver.display_trace_y2_sminimum() == 0.0
 
 
-def test_display_trace_y2_unit(driver):
-    for unit in ["DB", "LINEAR", "DB_PER_KM", "PERCENT"]:
-        driver.display_trace_y2_unit(unit)
-        assert driver.display_trace_y2_unit() == unit
+@pytest.mark.parametrize("unit", ["DB", "LINEAR", "DB_PER_KM", "PERCENT"])
+def test_display_trace_y2_unit(driver, unit):
+    driver.display_trace_y2_unit(unit)
+    assert driver.display_trace_y2_unit() == unit
 
 
-def test_format_data(driver):
-    for fmt in ["ASCII", "REAL64", "REAL32"]:
-        driver.format_data(fmt)
-        assert driver.format_data() == fmt
+@pytest.mark.parametrize("fmt", ["ASCII", "REAL64", "REAL32"])
+def test_format_data(driver, fmt):
+    driver.format_data(fmt)
+    assert driver.format_data() == fmt
 
 
 def test_sense_average_count(driver):
@@ -299,10 +298,10 @@ def test_sense_correction_level_shift(driver):
     assert driver.sense_correction_level_shift() == val
 
 
-def test_sense_correction_rvelocity_medium(driver):
-    for medium in ["AIR", "VACUUM"]:
-        driver.sense_correction_rvelocity_medium(medium)
-        assert driver.sense_correction_rvelocity_medium() == medium
+@pytest.mark.parametrize("medium", ["AIR", "VACUUM"])
+def test_sense_correction_rvelocity_medium(driver, medium):
+    driver.sense_correction_rvelocity_medium(medium)
+    assert driver.sense_correction_rvelocity_medium() == medium
 
 
 def test_sense_correction_wavelength_shift(driver):
@@ -312,23 +311,22 @@ def test_sense_correction_wavelength_shift(driver):
     assert driver.sense_correction_wavelength_shift() == val
 
 
-def test_sense_sensitivity(driver):
-    for mode in ["NORMAL_HOLD", "NORMAL_AUTO", "MID", "HIGH1", "HIGH2", "HIGH3", "NORMAL"]:
-        driver.sense_sensitivity(mode)
-        assert driver.sense_sensitivity() == mode
+@pytest.mark.parametrize("mode", ["NORMAL_HOLD", "NORMAL_AUTO", "MID", "HIGH1", "HIGH2", "HIGH3", "NORMAL"])
+def test_sense_sensitivity(driver, mode):
+    driver.sense_sensitivity(mode)
+    assert driver.sense_sensitivity() == mode
 
 
-def test_sense_setting_correction(driver):
-    driver.sense_setting_correction("OFF")
-    assert driver.sense_setting_correction() == "OFF"
-    driver.sense_setting_correction("ON_MODE1")
-    assert driver.sense_setting_correction() == "ON_MODE1"
+@pytest.mark.parametrize("mode", ["OFF", "ON_MODE1"])
+def test_sense_setting_correction(driver, mode):
+    driver.sense_setting_correction(mode)
+    assert driver.sense_setting_correction() == mode
 
 
-def test_sense_setting_fconnector(driver):
-    for mode in ["NORMAL", "ANGLED"]:
-        driver.sense_setting_fconnector(mode)
-        assert driver.sense_setting_fconnector() == mode
+@pytest.mark.parametrize("mode", ["NORMAL", "ANGLED"])
+def test_sense_setting_fconnector(driver, mode):
+    driver.sense_setting_fconnector(mode)
+    assert driver.sense_setting_fconnector() == mode
 
 
 def test_sense_setting_smoothing(driver):
@@ -355,11 +353,11 @@ def test_sense_sweep_segment_points(driver):
     assert driver.sense_sweep_segment_points() == 100
 
 
-def test_sense_sweep_speed(driver):
+@pytest.mark.parametrize("speed", ["1X", "2X"])
+def test_sense_sweep_speed(driver, speed):
     driver.reset()
-    for speed in ["1X", "2X"]:
-        driver.sense_sweep_speed(speed)
-        assert driver.sense_sweep_speed() == speed
+    driver.sense_sweep_speed(speed)
+    assert driver.sense_sweep_speed() == speed
 
 
 def test_sense_sweep_step(driver):
@@ -435,11 +433,11 @@ def test_trace_active(driver):
         tr.active()
 
 
-def test_trace_attribute(driver):
+@pytest.mark.parametrize("attribute", ['WRITE', 'FIX', 'MAX_HOLD', 'MIN_HOLD', 'ROLLING_AVERAGE', 'CALCULATE'])
+def test_trace_attribute(driver, attribute):
     for tr in driver.traces:
-        for attribute in ('WRITE', 'FIX', 'MAX_HOLD', 'MIN_HOLD', 'ROLLING_AVERAGE', 'CALCULATE'):
-            tr.attribute(attribute)
-            assert tr.attribute() == attribute
+        tr.attribute(attribute)
+        assert tr.attribute() == attribute
 
 
 def test_trace_roll_avg(driver):
@@ -490,22 +488,22 @@ def test_trace_min_hold(driver):
         assert tr.attribute() == 'MIN_HOLD'
 
 
-def test_sweep_mode(driver):
-    for mode in ("SINGLE", "REPEAT", "AUTO", "SEGMENT"):
-        driver.sweep_mode(mode)
-        assert driver.sweep_mode() == mode
+@pytest.mark.parametrize("mode", ("SINGLE", "REPEAT", "AUTO", "SEGMENT"))
+def test_sweep_mode(driver, mode):
+    driver.sweep_mode(mode)
+    assert driver.sweep_mode() == mode
 
 
 def test_single(driver):
     driver.single()
-    assert driver.sweep_mode() is "SINGLE"
+    assert driver.sweep_mode() == "SINGLE"
 
 
 def test_repeat(driver):
     driver.repeat()
-    assert driver.sweep_mode() is "REPEAT"
+    assert driver.sweep_mode() == "REPEAT"
 
 
 def test_auto(driver):
     driver.auto()
-    assert driver.sweep_mode() is "AUTO"
+    assert driver.sweep_mode() == "AUTO"

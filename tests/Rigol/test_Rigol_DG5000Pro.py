@@ -1,4 +1,3 @@
-import math
 import random
 import string
 
@@ -31,11 +30,10 @@ def test_display_brightness(driver):
     assert driver.display_brightness() == 42
 
 
-def test_screen_capture_format(driver):
-    driver.screen_capture_format("bmp")
-    assert driver.screen_capture_format() == "bmp"
-    driver.screen_capture_format("png")
-    assert driver.screen_capture_format() == "png"
+@pytest.mark.parametrize("format_type", ["bmp", "png"])
+def test_screen_capture_format(driver, format_type):
+    driver.screen_capture_format(format_type)
+    assert driver.screen_capture_format() == format_type
 
 
 def test_screen_capture_png(driver):
@@ -66,32 +64,40 @@ def test_display_text(driver):
     driver.display_clear_text()
 
 
-def test_display_unit_pulse(driver):
-    driver.display_unit_pulse("width")
-    assert driver.display_unit_pulse() == "width"
-    driver.display_unit_pulse("duty")
-    assert driver.display_unit_pulse() == "duty"
+@pytest.mark.parametrize("unit_type,expected", [
+    ("width", "width"),
+    ("duty", "duty")
+])
+def test_display_unit_pulse(driver, unit_type, expected):
+    driver.display_unit_pulse(unit_type)
+    assert driver.display_unit_pulse() == expected
 
 
-def test_display_unit_rate(driver):
-    driver.display_unit_rate("frequency")
-    assert driver.display_unit_rate() == "frequency"
-    driver.display_unit_rate("period")
-    assert driver.display_unit_rate() == "period"
+@pytest.mark.parametrize("unit_type,expected", [
+    ("frequency", "frequency"),
+    ("period", "period")
+])
+def test_display_unit_rate(driver, unit_type, expected):
+    driver.display_unit_rate(unit_type)
+    assert driver.display_unit_rate() == expected
 
 
-def test_display_unit_sweep(driver):
-    driver.display_unit_sweep("start-stop")
-    assert driver.display_unit_sweep() == "start-stop"
-    driver.display_unit_sweep("center-span")
-    assert driver.display_unit_sweep() == "center-span"
+@pytest.mark.parametrize("unit_type,expected", [
+    ("start-stop", "start-stop"),
+    ("center-span", "center-span")
+])
+def test_display_unit_sweep(driver, unit_type, expected):
+    driver.display_unit_sweep(unit_type)
+    assert driver.display_unit_sweep() == expected
 
 
-def test_display_unit_voltage(driver):
-    driver.display_unit_voltage("amplitude-offset")
-    assert driver.display_unit_voltage() == "amplitude-offset"
-    driver.display_unit_voltage("high-low")
-    assert driver.display_unit_voltage() == "high-low"
+@pytest.mark.parametrize("unit_type,expected", [
+    ("amplitude-offset", "amplitude-offset"),
+    ("high-low", "high-low")
+])
+def test_display_unit_voltage(driver, unit_type, expected):
+    driver.display_unit_voltage(unit_type)
+    assert driver.display_unit_voltage() == expected
 
 
 def test_display_view(driver):
@@ -167,18 +173,17 @@ def test_output_load(driver):
         assert ch.output_load() == 50.0
 
 
-def test_output_polarity(driver):
-    driver.channels.output_polarity("normal")
-    assert all(array(driver.channels.output_polarity()) == "normal")
-    driver.channels.output_polarity("inverted")
-    assert all(array(driver.channels.output_polarity()) == "inverted")
+@pytest.mark.parametrize("polarity", ["normal", "inverted"])
+def test_output_polarity(driver, polarity):
+    driver.channels.output_polarity(polarity)
+    assert all(array(driver.channels.output_polarity()) == polarity)
 
 
 def test_output_skew_time(driver):
     for ch in driver.channels:
         time = random.uniform(-200e-9, 200e-9)
         ch.output_skew_time(time)
-        assert math.isclose(ch.output_skew_time(), time, abs_tol=1e-3)
+        assert ch.output_skew_time() == pytest.approx(time, abs=1e-3)
         ch.output_skew_time("MIN")
         assert ch.output_skew_time() == -200e-9
         ch.output_skew_time("MAX")
@@ -201,21 +206,18 @@ def test_output_sync(driver):
     assert all(array(driver.channels.output_sync()) == False)
 
 
-def test_output_sync_mode(driver):
+@pytest.mark.parametrize("sync_mode", ["normal", "marker"])
+def test_output_sync_mode(driver, sync_mode):
     driver.channels.source_sweep_state(True)  # Required to enable output sync mode
     driver.channels.output_sync(True)
-
-    driver.channels.output_sync_mode("normal")
-    assert all(array(driver.channels.output_sync_mode()) == "normal")
-    driver.channels.output_sync_mode("marker")
-    assert all(array(driver.channels.output_sync_mode()) == "marker")
+    driver.channels.output_sync_mode(sync_mode)
+    assert all(array(driver.channels.output_sync_mode()) == sync_mode)
 
 
-def test_output_sync_polarity(driver):
-    driver.channels.output_sync_polarity("normal")
-    assert all(array(driver.channels.output_sync_polarity()) == "normal")
-    driver.channels.output_sync_polarity("inverted")
-    assert all(array(driver.channels.output_sync_polarity()) == "inverted")
+@pytest.mark.parametrize("polarity", ["normal", "inverted"])
+def test_output_sync_polarity(driver, polarity):
+    driver.channels.output_sync_polarity(polarity)
+    assert all(array(driver.channels.output_sync_polarity()) == polarity)
 
 
 def test_output_trigger(driver):
@@ -239,12 +241,11 @@ def test_source_burst_state(driver):
         assert ch.source_burst_state() == False
 
 
-def test_source_burst_mode(driver):
+@pytest.mark.parametrize("burst_mode", ["gated", "triggered"])
+def test_source_burst_mode(driver, burst_mode):
     for ch in driver.channels:
-        ch.source_burst_mode("gated")
-        assert ch.source_burst_mode() == "gated"
-        ch.source_burst_mode("triggered")
-        assert ch.source_burst_mode() == "triggered"
+        ch.source_burst_mode(burst_mode)
+        assert ch.source_burst_mode() == burst_mode
 
 
 def test_source_sweep_state(driver):
@@ -281,26 +282,20 @@ def test_trigger_delay(driver):
         ch.trigger_delay('DEF')
 
 
-def test_trigger_slope(driver):
+@pytest.mark.parametrize("slope", ["negative", "positive"])
+def test_trigger_slope(driver, slope):
     driver.channels.trigger_source("external")  # Required to enable trigger slope
     for ch in driver.channels:
-        ch.trigger_slope("negative")
-        assert ch.trigger_slope() == "negative"
-        ch.trigger_slope("positive")
-        assert ch.trigger_slope() == "positive"
+        ch.trigger_slope(slope)
+        assert ch.trigger_slope() == slope
 
 
-def test_trigger_source(driver):
+@pytest.mark.parametrize("source", ["immediate", "external", "bus", "timer"])
+def test_trigger_source(driver, source):
     driver.channels.source_burst_state(True)  # Required to enable trigger all possible trigger sources
     for ch in driver.channels:
-        ch.trigger_source("immediate")
-        assert ch.trigger_source() == "immediate"
-        ch.trigger_source("external")
-        assert ch.trigger_source() == "external"
-        ch.trigger_source("bus")
-        assert ch.trigger_source() == "bus"
-        ch.trigger_source("timer")
-        assert ch.trigger_source() == "timer"
+        ch.trigger_source(source)
+        assert ch.trigger_source() == source
 
 
 def test_trigger_timer(driver):
@@ -309,7 +304,7 @@ def test_trigger_timer(driver):
     for ch in driver.channels:
         time = random.uniform(1e-6, 8000)
         ch.trigger_timer(time)
-        assert math.isclose(ch.trigger_timer(), time)
+        assert ch.trigger_timer() == pytest.approx(time)
         ch.trigger_timer("MIN")
         assert ch.trigger_timer() == 0
         ch.trigger_timer("MAX")
