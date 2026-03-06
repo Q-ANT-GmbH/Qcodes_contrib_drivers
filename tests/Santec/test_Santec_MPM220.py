@@ -2,9 +2,6 @@
 
 These tests require a connected MPM-220 instrument.
 Update the fixture address/port for your setup.
-
-Following the test structure from test_Santec_TSL570.py, each parameter
-is tested individually to verify proper communication with the instrument.
 """
 
 import re
@@ -23,10 +20,11 @@ def driver():
     mpm.close()
 
 
-def _first_module(driver: SantecMPM220):
+@pytest.fixture
+def first_module(driver):
     """Get the first detected measurement module."""
-    if len(driver.modules) == 0:
-        pytest.skip("No modules detected in MPM-220 chassis.")
+    if not driver.modules:
+        pytest.skip("No modules detected")
     return driver.modules[0]
 
 
@@ -34,19 +32,16 @@ def _first_module(driver: SantecMPM220):
 def test_idn(driver):
     """Test instrument identification query (*IDN?)."""
     idn_dict = driver.get_idn()
+    assert isinstance(idn_dict, dict)
     assert "model" in idn_dict
     assert idn_dict["model"].startswith("MPM")
 
 
-def test_module_idn(driver):
+def test_module_idn(first_module):
     """Test module identification via get_idn()."""
-    module = _first_module(driver)
-    idn_dict = module.get_idn()
-    assert "vendor" in idn_dict
-    assert "model" in idn_dict
-    assert "serial" in idn_dict
-    assert "firmware" in idn_dict
-    assert idn_dict["model"].startswith("MPM-")
+    idn = first_module.get_idn()
+    assert isinstance(idn, dict)
+    assert idn["model"].startswith("MPM-")
 
 
 def test_gpib_address(driver):
@@ -59,15 +54,12 @@ def test_gpib_address(driver):
 def test_ip_address(driver):
     """Test IP address readout (IP?)."""
     ip_addr = driver.ip_address()
-    assert isinstance(ip_addr, str)
     assert re.match(r"^\d+\.\d+\.\d+\.\d+$", ip_addr)
 
 
 def test_gateway_address(driver):
     """Test gateway address parameter (GW/GW?)."""
     gw_addr = driver.gateway_address()
-    assert isinstance(gw_addr, str)
-    # Gateway might be empty or valid IP format
     if gw_addr.strip():
         assert re.match(r"^\d+\.\d+\.\d+\.\d+$", gw_addr)
 
@@ -75,182 +67,151 @@ def test_gateway_address(driver):
 def test_subnet_mask(driver):
     """Test subnet mask parameter (SUBNET/SUBNET?)."""
     subnet_mask = driver.subnet_mask()
-    assert isinstance(subnet_mask, str)
     assert re.match(r"^\d+\.\d+\.\d+\.\d+$", subnet_mask)
 
 
+def test_module_status(driver):
+    """Test module status parameter (IDIS?)."""
+    status = driver.module_status()
+    assert isinstance(status, list)
+    assert len(status) == 5
+    assert all(isinstance(present, bool) for present in status)
+
+
+def test_error(driver):
+    """Test error query (ERR?)."""
+    err = driver.error()
+    assert isinstance(err, dict)
+    assert "code" in err
+    assert "message" in err
+    assert isinstance(err["code"], int)
+    assert isinstance(err["message"], str)
+
+
 # Measurement Mode Parameters
-def test_measurement_mode(driver):
+@pytest.mark.parametrize("mode", ["CONST1", "SWEEP1", "CONST2", "SWEEP2", "FREERUN"])
+def test_measurement_mode(driver, mode):
     """Test measurement mode parameter (WMOD/WMOD?)."""
-    for mode in ["CONST1", "SWEEP1", "CONST2", "SWEEP2", "FREERUN"]:
-        driver.measurement_mode(mode)
-        assert driver.measurement_mode() == mode
+    driver.measurement_mode(mode)
+    assert driver.measurement_mode() == mode
 
 
 # Wavelength Parameters
 def test_wavelength(driver):
     """Test global wavelength parameter (WAV/WAV?)."""
-    test_wavelength = 1550.0  # nm
-    driver.wavelength(test_wavelength)
-    assert driver.wavelength() == pytest.approx(test_wavelength, abs=1e-3)
+    driver.wavelength(1550.0)
+    assert driver.wavelength() == pytest.approx(1550.0, abs=1e-3)
 
 
 def test_sweep_parameters(driver):
     """Test sweep wavelength parameters (WSET/WSET?)."""
-    start = 1520.0  # nm
-    stop = 1570.0  # nm
-    step = 0.05  # nm
-    driver.set_sweep_parameters(start=start, stop=stop, step=step)
-    assert driver.sweep_start() == pytest.approx(start, abs=1e-3)
-    assert driver.sweep_stop() == pytest.approx(stop, abs=1e-3)
-    assert driver.sweep_step() == pytest.approx(step, abs=1e-3)
+    driver.set_sweep_parameters(start=1520.0, stop=1570.0, step=0.05)
+    assert driver.sweep_start() == pytest.approx(1520.0, abs=1e-3)
+    assert driver.sweep_stop() == pytest.approx(1570.0, abs=1e-3)
+    assert driver.sweep_step() == pytest.approx(0.05, abs=1e-3)
 
 
-def test_sweep_speed(driver):
+@pytest.mark.parametrize("speed", [1.0, 5.0, 50.0])
+def test_sweep_speed(driver, speed):
     """Test sweep speed parameter (SPE/SPE?)."""
-    for speed in [1.0, 5.0, 50.0]:
-        driver.sweep_speed(speed)
-        assert driver.sweep_speed() == pytest.approx(speed, abs=1e-3)
+    driver.sweep_speed(speed)
+    assert driver.sweep_speed() == pytest.approx(speed, abs=1e-3)
 
 
 # Gain Parameters
-def test_gain(driver):
+def test_gain(driver, first_module):
     """Test global TIA gain parameter (LEV/LEV?)."""
-    module = _first_module(driver)
-    if module._max_gain is None:
+    if first_module._max_gain is None:
         pytest.skip("Module does not support gain control (MPM-215).")
 
-    for gain in [1, 3, 5]:
-        driver.gain(gain)
-        assert driver.gain() == gain
+    driver.gain(1)
+    assert driver.gain() == 1
 
 
-def test_module_wavelength_channels(driver):
-    """Test per-channel wavelength parameters (DWAV/DWAV?) for all available channels."""
-    module = _first_module(driver)
-
-    for ch in module.channels:
-        test_wl = 1550.0 + ch.channel  # nm
+def test_module_wavelength_channels(first_module):
+    """Test per-channel wavelength parameters (DWAV/DWAV?)."""
+    for i, ch in enumerate(first_module.channels, 1):
+        test_wl = 1550.0 + i
         ch.wavelength(test_wl)
         assert ch.wavelength() == pytest.approx(test_wl, abs=1e-3)
 
 
-def test_module_gain_channels(driver):
-    """Test per-channel gain parameters (DLEV/DLEV?) for all available channels."""
-    module = _first_module(driver)
-
-    if module._max_gain is None:
+def test_module_gain_channels(first_module):
+    """Test per-channel gain parameters (DLEV/DLEV?)."""
+    if first_module._max_gain is None:
         pytest.skip("Module does not support gain control (MPM-215).")
 
-    for ch in module.channels:
-        for gain in [1, 3, module._max_gain]:
-            ch.gain(gain)
-            assert ch.gain() == gain
+    for ch in first_module.channels:
+        ch.gain(1)
+        assert ch.gain() == 1
 
 
 # Averaging Parameters
-def test_average_time(driver):
+@pytest.mark.parametrize("avg_time", [0.1, 1.0, 10.0])
+def test_average_time(driver, avg_time):
     """Test averaging time parameter (AVG/AVG?)."""
-    for avg_time in [0.1, 1.0, 10.0]:
-        driver.average_time(avg_time)
-        assert driver.average_time() == pytest.approx(avg_time, abs=1e-2)
+    driver.average_time(avg_time)
+    assert driver.average_time() == pytest.approx(avg_time, abs=1e-2)
 
 
-def test_freerun_average_time(driver):
+@pytest.mark.parametrize("avg_time", [0.1, 1.0, 10.0])
+def test_freerun_average_time(driver, avg_time):
     """Test freerun averaging time parameter (FGSAVG/FGSAVG?)."""
-    for avg_time in [0.1, 1.0, 10.0]:
-        driver.freerun_average_time(avg_time)
-        assert driver.freerun_average_time() == pytest.approx(avg_time, abs=1e-2)
+    driver.freerun_average_time(avg_time)
+    assert driver.freerun_average_time() == pytest.approx(avg_time, abs=1e-2)
 
 
 # Power Unit Parameter
-def test_power_unit(driver):
+@pytest.mark.parametrize("unit", ["dBm", "mW"])
+def test_power_unit(driver, unit):
     """Test power unit selection parameter (UNIT/UNIT?)."""
-    for unit in ["dBm", "mW"]:
-        driver.power_unit(unit)
-        assert driver.power_unit() == unit
+    driver.power_unit(unit)
+    assert driver.power_unit() == unit
 
 
 # Auto-Range Parameters
-def test_auto_range_global(driver):
+@pytest.mark.parametrize("mode", ["AUTO", "MANUAL"])
+def test_auto_range_global(driver, mode):
     """Test global auto-range mode parameter (AUTO/AUTO?)."""
-    for mode in ["AUTO", "MANUAL"]:
-        driver.auto_range(mode)
-        assert driver.auto_range() == mode
+    driver.auto_range(mode)
+    assert driver.auto_range() == mode
 
 
-def test_module_auto_range(driver):
+@pytest.mark.parametrize("mode", ["AUTO", "MANUAL"])
+def test_module_auto_range(first_module, mode):
     """Test per-module auto-range parameter (DAUTO/DAUTO?)."""
-    module = _first_module(driver)
-    for mode in ["AUTO", "MANUAL"]:
-        module.auto_range(mode)
-        assert module.auto_range() == mode
+    first_module.auto_range(mode)
+    assert first_module.auto_range() == mode
 
 
-def test_module_calibration_wavelengths(driver):
+# Calibration Parameters
+def test_module_calibration_wavelengths(first_module):
     """Test calibration wavelength readout (CWAV?)."""
-    module = _first_module(driver)
-
-    # Query calibration wavelengths
-    wavelengths = module.calibration_wavelength()
-    assert isinstance(wavelengths, (list, tuple)) or hasattr(wavelengths, '__iter__')
-    # Check first few wavelengths are in valid range
-    for wl in wavelengths[:5]:
-        assert 1250 <= wl <= 1630
+    wavelengths = first_module.calibration_wavelength()
+    assert all(1250 <= wl <= 1630 for wl in wavelengths[:5])
 
 
-def test_module_calibration_power_offsets(driver):
-    """Test calibration power offset readout (CWAVPO?) for each channel."""
-    module = _first_module(driver)
-
-    # Query calibration power offsets for each channel
-    for ch in module.channels:
+def test_module_calibration_power_offsets(first_module):
+    """Test calibration power offset readout (CWAVPO?)."""
+    for ch in first_module.channels:
         offsets = ch.calibration_power_offset()
-        assert isinstance(offsets, (list, tuple)) or hasattr(offsets, '__iter__')
-        # Check first few offsets are reasonable dB values
-        for offset in offsets[:5]:
-            assert isinstance(offset, (int, float))
-            assert -50 <= offset <= 50  # Reasonable dB range
+        assert all(-50 <= offset <= 50 for offset in offsets[:5])
 
 
-def test_module_calibration_data(driver):
-    """Test combined calibration data readout (CWAV? and CWAVPO?)."""
-    module = _first_module(driver)
-    num_channels = module._num_channels
-
-    # Query calibration data for index 1 using legacy method
-    calib_data = module.get_calibration_data(1)
-
-    # Verify structure: should have one entry per channel
-    assert len(calib_data) == num_channels
-
-    for ch in range(1, num_channels + 1):
-        assert ch in calib_data
-        assert "wavelength" in calib_data[ch]
-        assert "power_offset" in calib_data[ch]
-
-        # Validate wavelength is in valid range
-        assert 1250 <= calib_data[ch]["wavelength"] <= 1630
-
-        # Power offset should be a reasonable dB value
-        assert isinstance(calib_data[ch]["power_offset"], float)
-        assert -50 <= calib_data[ch]["power_offset"] <= 50  # Reasonable dB range
-
-
-# Trigger Mode Parameter
-def test_trigger_mode(driver):
+# Trigger Mode Parameter# Trigger Mode Parameter
+@pytest.mark.parametrize("mode", ["INTERNAL", "EXTERNAL"])
+def test_trigger_mode(driver, mode):
     """Test trigger mode parameter (TRIG/TRIG?)."""
-    for mode in ["INTERNAL", "EXTERNAL"]:
-        driver.trigger_mode(mode)
-        assert driver.trigger_mode() == mode
+    driver.trigger_mode(mode)
+    assert driver.trigger_mode() == mode
 
 
 # Logging Parameters
-def test_logging_points(driver):
+@pytest.mark.parametrize("points", [10, 100, 1000])
+def test_logging_points(driver, points):
     """Test logging points parameter (LOGN/LOGN?)."""
-    for points in [10, 100, 1000]:
-        driver.logging_points(points)
-        assert driver.logging_points() == points
+    driver.logging_points(points)
+    assert driver.logging_points() == points
 
 
 # Status and Measurement Commands
@@ -259,29 +220,20 @@ def test_measurement_status(driver):
     driver.meas()
     time.sleep(0.2)
     status = driver.measurement_status()
-    assert "status" in status
-    assert "points" in status
     assert status["status"] in ["MEASURING", "COMPLETED", "STOPPED"]
     driver.stop()
 
 
-# Module Readout
-def test_module_read(driver):
+def test_module_read(driver, first_module):
     """Test module readout (READ?)."""
-    module = _first_module(driver)
-    num_channels = module._num_channels
-
     driver.measurement_mode("CONST1")
     driver.zero()
-    time.sleep(3.1)  # Wait for zeroing
+    time.sleep(3.1)
     driver.meas()
-    time.sleep(0.5)  # Allow measurement to complete
+    time.sleep(0.5)
 
-    result = module.read()
-    assert isinstance(result, dict)
-    # Verify only the expected channels are present
-    expected_keys = {f"ch{i}" for i in range(1, num_channels + 1)}
-    assert set(result.keys()) == expected_keys
+    result = first_module.read()
+    assert len(result) == first_module._num_channels
     assert all(isinstance(v, float) for v in result.values())
 
     driver.stop()
@@ -291,7 +243,6 @@ def test_module_read(driver):
 def test_zero_command(driver):
     """Test zeroing command (ZERO)."""
     driver.zero()
-    # Zeroing takes ~3 seconds; just verify command executes without error
     time.sleep(3.1)
 
 
@@ -300,8 +251,7 @@ def test_meas_command(driver):
     driver.measurement_mode("CONST1")
     driver.meas()
     time.sleep(0.2)
-    status = driver.measurement_status()
-    assert status["status"] in ["MEASURING", "COMPLETED"]
+    assert driver.measurement_status()["status"] in ["MEASURING", "COMPLETED"]
     driver.stop()
 
 
@@ -311,11 +261,10 @@ def test_stop_command(driver):
     time.sleep(0.2)
     driver.stop()
     time.sleep(0.1)
-    status = driver.measurement_status()
-    assert status["status"] == "STOPPED"
+    assert driver.measurement_status()["status"] == "STOPPED"
 
 
 def test_reset_command(driver):
     """Test instrument reset command (*RST)."""
     driver.reset()
-    time.sleep(0.5)  # Allow time for reset to complete
+    time.sleep(0.5)

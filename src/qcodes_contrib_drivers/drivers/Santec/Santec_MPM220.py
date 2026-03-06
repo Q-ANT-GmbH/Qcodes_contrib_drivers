@@ -15,6 +15,7 @@ from qcodes import validators as vals
 from qcodes.instrument import IPInstrument, InstrumentChannel, InstrumentBaseKWArgs
 from qcodes.instrument.channel import ChannelList
 from qcodes.parameters import Parameter, ParameterWithSetpoints
+from qcodes.validators import Arrays, Anything
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -24,12 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class SantecMPMChannel(InstrumentChannel):
-    """
-    Channel for a single measurement port in a Santec MPM module.
-
-    Each channel can measure optical power or electrical current depending on
-    the module type, and supports configurable wavelength and gain settings.
-    """
+    """Channel for a single measurement port in a Santec MPM module."""
 
     def __init__(
             self,
@@ -40,14 +36,12 @@ class SantecMPMChannel(InstrumentChannel):
             **kwargs: "Unpack[InstrumentBaseKWArgs]",
     ) -> None:
         super().__init__(parent, name, **kwargs)
-        self._parent = parent
         self.channel = channel
         self.module = module
 
-        # Wavelength parameter
         self.wavelength: Parameter = self.add_parameter(
             name="wavelength",
-            label=f"Wavelength",
+            label="Wavelength",
             unit="nm",
             get_cmd=f"DWAV? {module},{channel}",
             set_cmd=f"DWAV {module},{channel} {{:.3f}}",
@@ -56,12 +50,10 @@ class SantecMPMChannel(InstrumentChannel):
         )
         """Measurement wavelength (nm)"""
 
-        # TIA Gain parameter (if supported by the module)
-        # This will be set by the parent module if _max_gain is not None
         if parent._max_gain is not None:
             self.gain: Parameter = self.add_parameter(
                 name="gain",
-                label=f"TIA Gain",
+                label="TIA Gain",
                 get_cmd=f"DLEV? {module},{channel}",
                 set_cmd=f"DLEV {module},{channel} {{:d}}",
                 get_parser=lambda s: int(float(s.strip())),
@@ -69,24 +61,25 @@ class SantecMPMChannel(InstrumentChannel):
             )
             """TIA Gain setting for this channel"""
 
-        # Calibration power offset parameter
         self.calibration_power_offset: Parameter = self.add_parameter(
             name="calibration_power_offset",
             label="Calibration power offset",
             unit="dB",
-            get_raw=self._get_calibration_power_offsets,
-            setpoints=(self._parent.calibration_wavelength,),
+            get_cmd=self._get_calibration_power_offset,
+            setpoints=(parent.calibration_wavelength,),
             parameter_class=ParameterWithSetpoints,
+            vals=Arrays(shape=(20,), valid_types=(float,)),
+            snapshot_get=True,
+            snapshot_value=True
         )
         """Power calibration offset (dB) - requires wavelength index parameter (1-20)"""
 
-    def _get_calibration_power_offset(self):
-        """Get calibration power offset for current wavelength index setpoint."""
-        calibration_power_offset = np.empty(20)
-        for i in range(20):
-            retval = f"CWAVPO? {self.module},{self.channel},{i}".strip()  # Validate indices
-            calibration_power_offset[i] = float(retval)
-        return calibration_power_offset
+    def _get_calibration_power_offset(self) -> np.ndarray:
+        """Get calibration power offset for all wavelength indices."""
+        return np.array([
+            float(self.root_instrument.ask(f"CWAVPO? {self.module},{self.channel},{i + 1}").strip())
+            for i in range(20)
+        ])
 
 
 class _SantecMPMxxxModule(InstrumentChannel):
@@ -116,18 +109,10 @@ class _SantecMPMxxxModule(InstrumentChannel):
             **kwargs: "Unpack[InstrumentBaseKWArgs]",
     ) -> None:
         super().__init__(parent, name, **kwargs)
-        self._parent = parent
         self.module = module
 
-        # Create channel submodules for each measurement port
-        channels = ChannelList(self, "channels", SantecMPMChannel)
-        for ch in range(1, self._num_channels + 1):
-            channel = SantecMPMChannel(self, f"ch{ch}", ch, module)
-            channels.append(channel)
-            self.add_submodule(f"ch{ch}", channel)
-        self.add_submodule("channels", channels)
+        self.IDN = self.add_parameter("IDN", get_cmd=self.get_idn, vals=Anything())
 
-        # Auto-range parameter
         self.auto_range: Parameter = self.add_parameter(
             name="auto_range",
             label="Auto Range Mode",
@@ -138,34 +123,35 @@ class _SantecMPMxxxModule(InstrumentChannel):
         )
         """Power range mode (AUTO or MANUAL)"""
 
-        # Calibration wavelength with setpoints
         self.calibration_wavelength: Parameter = self.add_parameter(
             name="calibration_wavelength",
             label="Calibration Wavelength",
             unit="nm",
-            get_raw=self._get_calibration_wavelengths,
+            get_cmd=self._get_calibration_wavelengths,
+            vals=Arrays(shape=(20,), valid_types=(float,))
         )
         """Calibration wavelength (nm) with index setpoint"""
 
-    def _get_calibration_wavelengths(self) -> float:
-        """Get calibration wavelength for current index setpoint."""
-        wavelengths = np.empty(20)
-        for idx in range(20):
-            wl = self._parent.ask(f"CWAV? {self.module},{idx + 1}").strip()  # Validate indices
-            wavelengths[idx] = float(wl)
-        return wavelengths
+        channels = ChannelList(self, "channels", SantecMPMChannel)
+        for ch in range(1, self._num_channels + 1):
+            channel = SantecMPMChannel(self, f"ch{ch}", ch, module)
+            # self.add_submodule(f"ch{ch}", cha
+            channels.append(channel)
+        self.channels = self.add_submodule("channels", channels.to_channel_tuple())
+
+    def _get_calibration_wavelengths(self) -> np.ndarray:
+        """Get calibration wavelengths for all indices."""
+        return np.array([
+            float(self._parent.ask(f"CWAV? {self.module},{i + 1}").strip())
+            for i in range(20)
+        ])
 
     def get_idn(self) -> Dict[str, str]:
         """Get module identification information."""
         response = self._parent.ask(f"MMVER? {self.module}").strip()
         parts = response.split(",")
-
         if len(parts) != 4:
-            raise ValueError(
-                f"Unexpected MMVER? response: {response!r}. "
-                f"Expected: 'SANTEC,MPM-XXX,serial,Ver. x.y'"
-            )
-
+            raise ValueError(f"Unexpected MMVER? response: {response!r}")
         return dict(zip(("vendor", "model", "serial", "firmware"), parts))
 
     def read(self) -> Dict[str, float]:
@@ -175,30 +161,30 @@ class _SantecMPMxxxModule(InstrumentChannel):
         return {f"ch{i + 1}": values[i] for i in range(min(self._num_channels, len(values)))}
 
 
-class SantecMPM211(_SantecMPMxxxModule):
+class SantecMPM211Module(_SantecMPMxxxModule):
     """Santec MPM-211: 4 optical power channels with gain control."""
     _num_channels = 4
     _max_gain = 5
 
 
-class SantecMPM212(_SantecMPMxxxModule):
+class SantecMPM212Module(_SantecMPMxxxModule):
     """Santec MPM-212: 2 optical power channels + 2 analog outputs, with gain control."""
     _num_channels = 2
     _max_gain = 5
 
 
-class SantecMPM213(_SantecMPMxxxModule):
+class SantecMPM213Module(_SantecMPMxxxModule):
     """Santec MPM-213: 4 electrical current channels with gain control."""
     _num_channels = 4
     _max_gain = 4
 
 
-class SantecMPM215(_SantecMPMxxxModule):
+class SantecMPM215Module(_SantecMPMxxxModule):
     """Santec MPM-215: 4 optical power channels, high dynamic range, no gain control."""
     _num_channels = 4
 
 
-class SantecMPM217(_SantecMPMxxxModule):
+class SantecMPM217Module(_SantecMPMxxxModule):
     """Santec MPM-217: 4 optical power channels with gain control."""
     _num_channels = 4
     _max_gain = 5
@@ -206,11 +192,11 @@ class SantecMPM217(_SantecMPMxxxModule):
 
 # Populate module class lookup table
 _SantecMPMxxxModule.MODULE_CLASS_LUT = {
-    "MPM-211": SantecMPM211,
-    "MPM-212": SantecMPM212,
-    "MPM-213": SantecMPM213,
-    "MPM-215": SantecMPM215,
-    "MPM-217": SantecMPM217,
+    "MPM-211": SantecMPM211Module,
+    "MPM-212": SantecMPM212Module,
+    "MPM-213": SantecMPM213Module,
+    "MPM-215": SantecMPM215Module,
+    "MPM-217": SantecMPM217Module,
 }
 
 
@@ -239,7 +225,6 @@ class SantecMPM220(IPInstrument):
         kwargs.setdefault("write_confirmation", False)
         super().__init__(name, address, **kwargs)
 
-        # System parameters
         self.gpib_address: Parameter = self.add_parameter(
             name="gpib_address",
             label="GPIB Address",
@@ -277,7 +262,14 @@ class SantecMPM220(IPInstrument):
         )
         """Subnet mask"""
 
-        # Measurement mode
+        self.error: Parameter = self.add_parameter(
+            name="error",
+            label="Error queue",
+            get_cmd="ERR?",
+            get_parser=lambda s: dict(code=int(s.strip().split(",")[0]), message=s.strip().split(",")[1].strip('"'))
+        )
+        """Read and clear error from error queue (read-only, returns error number)"""
+
         self.measurement_mode: Parameter = self.add_parameter(
             name="measurement_mode",
             label="Measurement Mode",
@@ -288,7 +280,6 @@ class SantecMPM220(IPInstrument):
         )
         """Measurement mode"""
 
-        # Wavelength parameters
         self.wavelength: Parameter = self.add_parameter(
             name="wavelength",
             label="Wavelength",
@@ -344,7 +335,6 @@ class SantecMPM220(IPInstrument):
         )
         """Sweep speed (nm/s)"""
 
-        # Gain and averaging
         self.gain: Parameter = self.add_parameter(
             name="gain",
             label="TIA Gain",
@@ -377,7 +367,6 @@ class SantecMPM220(IPInstrument):
         )
         """Freerun averaging time (ms)"""
 
-        # Unit and range
         self.power_unit: Parameter = self.add_parameter(
             name="power_unit",
             label="Power Unit",
@@ -398,7 +387,6 @@ class SantecMPM220(IPInstrument):
         )
         """Global auto-range mode"""
 
-        # Trigger and logging
         self.trigger_mode: Parameter = self.add_parameter(
             name="trigger_mode",
             label="Trigger Mode",
@@ -419,55 +407,75 @@ class SantecMPM220(IPInstrument):
         )
         """Number of data points to log"""
 
-        # Detect modules and finalize
+        self.measurement_status: Parameter = self.add_parameter(
+            name="measurement_status",
+            label="Measurement Status",
+            get_cmd="STAT?",
+            set_cmd=None,
+            get_parser=self._parse_measurement_status,
+        )
+        """Current measurement status (dict with 'status' and 'points' keys)"""
+
+        self.module_status: Parameter = self.add_parameter(
+            name="module_status",
+            label="Module Status",
+            get_cmd="IDIS?",
+            set_cmd=None,
+            get_parser=lambda s: [bool(int(x)) for x in s.split(",")],
+        )
+        """Module status (dict mapping slot to boolean presence)"""
+
         self._detect_modules()
         self.connect_message()
 
+    @staticmethod
+    def _parse_measurement_status(response: str) -> Dict[str, any]:
+        """Parse STAT? response into a dictionary."""
+        status, points = response.strip().split(",")
+        status_map = {"0": "MEASURING", "1": "COMPLETED", "-1": "STOPPED"}
+        return {"status": status_map.get(status, status), "points": int(points)}
+
+    def _set_sweep_start(self, value: float) -> None:
+        """Set sweep start wavelength while preserving stop and step."""
+        params = self.ask("WSET?").strip().split(",")
+        self.write(f"WSET {value:.3f},{params[1]},{params[2]}")
+
+    def _set_sweep_stop(self, value: float) -> None:
+        """Set sweep stop wavelength while preserving start and step."""
+        params = self.ask("WSET?").strip().split(",")
+        self.write(f"WSET {params[0]},{value:.3f},{params[2]}")
+
+    def _set_sweep_step(self, value: float) -> None:
+        """Set sweep step while preserving start and stop."""
+        params = self.ask("WSET?").strip().split(",")
+        self.write(f"WSET {params[0]},{params[1]},{value:.3f}")
+
     def _detect_modules(self) -> None:
         """Detect installed measurement modules and create appropriate channel objects."""
-        response = self.ask("IDIS?").strip()
-        module_status = [int(x) for x in response.split(",")]
-
-        if len(module_status) != 5:
-            log.warning(f"Expected 5 modules from IDIS?, got {len(module_status)}")
-
         modules = ChannelList(self, "modules", _SantecMPMxxxModule)
-        for idx, is_present in enumerate(module_status):
-            if is_present:
-                # Create temporary module to get its type
-                temp_module = _SantecMPMxxxModule(self, f"temp{idx}", idx)
-                idn = temp_module.get_idn()
-                module_type = idn["model"]
 
-                # Get the appropriate subclass for this module type
-                module_class = _SantecMPMxxxModule.MODULE_CLASS_LUT.get(module_type)
-                if module_class is None:
-                    raise ValueError(
-                        f"Unknown module type '{module_type}' at module {idx}. "
-                        f"Supported: {', '.join(_SantecMPMxxxModule.MODULE_CLASS_LUT.keys())}"
-                    )
+        for idx, is_present in enumerate(self.module_status()):
+            if not is_present:
+                continue
 
-                # Create the correctly typed module instance
-                module = module_class(self, f"module{idx}", idx)
-                modules.append(module)
-                self.add_submodule(f"module{idx}", module)
-                log.info(f"Detected {idn['model']} at module{idx} (S/N: {idn['serial']})")
+            module_type = self.ask(f"MMVER? {idx}").strip().split(",")[1]
+            module_class = _SantecMPMxxxModule.MODULE_CLASS_LUT.get(module_type)
+
+            if module_class is None:
+                raise ValueError(
+                    f"Unknown module type '{module_type}' at slot {idx}. "
+                    f"Supported: {', '.join(_SantecMPMxxxModule.MODULE_CLASS_LUT.keys())}"
+                )
+
+            module = module_class(self, f"module{idx}", idx)
+            modules.append(module)
+            # self.add_submodule(f"module{idx}", module)
 
         self.add_submodule("modules", modules)
 
     def set_sweep_parameters(self, start: float, stop: float, step: float) -> None:
         """Configure sweep mode parameters (start, stop, step in nm)."""
         self.write(f"WSET {start:.3f},{stop:.3f},{step:.3f}")
-
-    def measurement_status(self) -> Dict[str, any]:
-        """Query current measurement status."""
-        response = self.ask("STAT?").strip()
-        status, points = response.split(",")
-        status_map = {"0": "MEASURING", "1": "COMPLETED", "-1": "STOPPED"}
-        return {
-            "status": status_map.get(status, status),
-            "points": int(points),
-        }
 
     def meas(self) -> None:
         """Start measurement."""
@@ -484,21 +492,3 @@ class SantecMPM220(IPInstrument):
     def reset(self) -> None:
         """Reset instrument to factory defaults."""
         self.write("*RST")
-
-    def _set_sweep_start(self, value: float) -> None:
-        """Set sweep start wavelength while preserving stop and step."""
-        response = self.ask("WSET?").strip()
-        _, stop, step = response.split(",")
-        self.write(f"WSET {value:.3f},{stop},{step}")
-
-    def _set_sweep_stop(self, value: float) -> None:
-        """Set sweep stop wavelength while preserving start and step."""
-        response = self.ask("WSET?").strip()
-        start, _, step = response.split(",")
-        self.write(f"WSET {start},{value:.3f},{step}")
-
-    def _set_sweep_step(self, value: float) -> None:
-        """Set sweep step while preserving start and stop."""
-        response = self.ask("WSET?").strip()
-        start, stop, _ = response.split(",")
-        self.write(f"WSET {start},{stop},{value:.3f}")
