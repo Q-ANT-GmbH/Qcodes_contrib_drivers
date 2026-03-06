@@ -117,8 +117,8 @@ def test_sweep_speed(driver):
 def test_gain(driver):
     """Test global TIA gain parameter (LEV/LEV?)."""
     module = _first_module(driver)
-    if module._module_type == "MPM-215":
-        pytest.skip("MPM-215 does not support gain control (LEV/DLEV commands).")
+    if module._max_gain is None:
+        pytest.skip("Module does not support gain control (MPM-215).")
 
     for gain in [1, 3, 5]:
         driver.gain(gain)
@@ -128,30 +128,24 @@ def test_gain(driver):
 def test_module_wavelength_channels(driver):
     """Test per-channel wavelength parameters (DWAV/DWAV?) for all available channels."""
     module = _first_module(driver)
-    num_channels = module._num_channels
 
-    for ch in range(1, num_channels + 1):
-        test_wl = 1550.0 + ch  # nm
-        channel = module.channels[ch - 1]
-        channel.wavelength(test_wl)
-        assert channel.wavelength() == pytest.approx(test_wl, abs=1e-3)
+    for ch in module.channels:
+        test_wl = 1550.0 + ch.channel  # nm
+        ch.wavelength(test_wl)
+        assert ch.wavelength() == pytest.approx(test_wl, abs=1e-3)
 
 
 def test_module_gain_channels(driver):
     """Test per-channel gain parameters (DLEV/DLEV?) for all available channels."""
     module = _first_module(driver)
 
-    if module._module_type == "MPM-215":
-        pytest.skip("MPM-215 does not support gain control (DLEV).")
+    if module._max_gain is None:
+        pytest.skip("Module does not support gain control (MPM-215).")
 
-    num_channels = module._num_channels
-    max_gain = 4 if module._module_type == "MPM-213" else 5
-
-    for ch in range(1, num_channels + 1):
-        channel = module.channels[ch - 1]
-        for gain in [1, 3, max_gain]:
-            channel.gain(gain)
-            assert channel.gain() == gain
+    for ch in module.channels:
+        for gain in [1, 3, module._max_gain]:
+            ch.gain(gain)
+            assert ch.gain() == gain
 
 
 # Averaging Parameters
@@ -194,32 +188,29 @@ def test_module_auto_range(driver):
 
 
 def test_module_calibration_wavelengths(driver):
-    """Test calibration wavelength readout (CWAV?) using setpoints."""
+    """Test calibration wavelength readout (CWAV?)."""
     module = _first_module(driver)
 
-    # Query first few calibration wavelengths (indices 1-5) using setpoint
-    for idx in range(1, 6):
-        module.calibration_index(idx)
-        wavelength = module.calibration_wavelength()
-        assert isinstance(wavelength, float)
-        assert 1250 <= wavelength <= 1630
+    # Query calibration wavelengths
+    wavelengths = module.calibration_wavelength()
+    assert isinstance(wavelengths, (list, tuple)) or hasattr(wavelengths, '__iter__')
+    # Check first few wavelengths are in valid range
+    for wl in wavelengths[:5]:
+        assert 1250 <= wl <= 1630
 
 
 def test_module_calibration_power_offsets(driver):
-    """Test calibration power offset readout (CWAVPO?) using setpoints."""
+    """Test calibration power offset readout (CWAVPO?) for each channel."""
     module = _first_module(driver)
-    num_channels = module._num_channels
 
-    # Query calibration data for index 1 using setpoint
-    module.calibration_index(1)
-
-    for ch in range(1, num_channels + 1):
-        param_name = f"calibration_power_offset_ch{ch}"
-        power_offset = getattr(module, param_name)()
-
-        # Power offset should be a reasonable dB value
-        assert isinstance(power_offset, float)
-        assert -50 <= power_offset <= 50  # Reasonable dB range
+    # Query calibration power offsets for each channel
+    for ch in module.channels:
+        offsets = ch.calibration_power_offset()
+        assert isinstance(offsets, (list, tuple)) or hasattr(offsets, '__iter__')
+        # Check first few offsets are reasonable dB values
+        for offset in offsets[:5]:
+            assert isinstance(offset, (int, float))
+            assert -50 <= offset <= 50  # Reasonable dB range
 
 
 def test_module_calibration_data(driver):

@@ -45,7 +45,7 @@ class SantecMPMChannel(InstrumentChannel):
         self.module = module
 
         # Wavelength parameter
-        self.add_parameter(
+        self.wavelength: Parameter = self.add_parameter(
             name="wavelength",
             label=f"Wavelength",
             unit="nm",
@@ -55,6 +55,38 @@ class SantecMPMChannel(InstrumentChannel):
             vals=vals.Numbers(1250, 1630),
         )
         """Measurement wavelength (nm)"""
+
+        # TIA Gain parameter (if supported by the module)
+        # This will be set by the parent module if _max_gain is not None
+        if parent._max_gain is not None:
+            self.gain: Parameter = self.add_parameter(
+                name="gain",
+                label=f"TIA Gain",
+                get_cmd=f"DLEV? {module},{channel}",
+                set_cmd=f"DLEV {module},{channel} {{:d}}",
+                get_parser=lambda s: int(float(s.strip())),
+                vals=vals.Ints(1, parent._max_gain),
+            )
+            """TIA Gain setting for this channel"""
+
+        # Calibration power offset parameter
+        self.calibration_power_offset: Parameter = self.add_parameter(
+            name="calibration_power_offset",
+            label="Calibration power offset",
+            unit="dB",
+            get_raw=self._get_calibration_power_offsets,
+            setpoints=(self._parent.calibration_wavelength,),
+            parameter_class=ParameterWithSetpoints,
+        )
+        """Power calibration offset (dB) - requires wavelength index parameter (1-20)"""
+
+    def _get_calibration_power_offset(self):
+        """Get calibration power offset for current wavelength index setpoint."""
+        calibration_power_offset = np.empty(20)
+        for i in range(20):
+            retval = f"CWAVPO? {self.module},{self.channel},{i}".strip()  # Validate indices
+            calibration_power_offset[i] = float(retval)
+        return calibration_power_offset
 
 
 class _SantecMPMxxxModule(InstrumentChannel):
@@ -72,8 +104,9 @@ class _SantecMPMxxxModule(InstrumentChannel):
     # Lookup table for module type to class mapping
     MODULE_CLASS_LUT = {}
 
-    # Subclasses should define _max_gain for channels with gain support
+    # Class variables: subclasses must define _num_channels and optionally _max_gain
     _max_gain = None
+    _num_channels = None
 
     def __init__(
             self,
@@ -85,10 +118,6 @@ class _SantecMPMxxxModule(InstrumentChannel):
         super().__init__(parent, name, **kwargs)
         self._parent = parent
         self.module = module
-
-        # Get module identification
-        idn = self.get_idn()
-        self._module_type = idn["model"]
 
         # Create channel submodules for each measurement port
         channels = ChannelList(self, "channels", SantecMPMChannel)
@@ -110,7 +139,7 @@ class _SantecMPMxxxModule(InstrumentChannel):
         """Power range mode (AUTO or MANUAL)"""
 
         # Calibration wavelength with setpoints
-        self.add_parameter(
+        self.calibration_wavelength: Parameter = self.add_parameter(
             name="calibration_wavelength",
             label="Calibration Wavelength",
             unit="nm",
@@ -118,53 +147,13 @@ class _SantecMPMxxxModule(InstrumentChannel):
         )
         """Calibration wavelength (nm) with index setpoint"""
 
-        # Calibration power offset parameters for each channel
-        for ch in range(1, self._num_channels + 1):
-            self.add_parameter(
-                parameter_class=ParameterWithSetpoints,
-                name=f"calibration_power_offset_ch{ch}",
-                label=f"Calibration Power Offset Ch{ch}",
-                unit="dB",
-                get_cmd=lambda idx=ch: self._get_calibration_power_offset(idx),
-                setpoints=(self.calibration_index,),
-                docstring=f"Power calibration offset (dB) for channel {ch} indexed by calibration_index",
-            )
-
-        # Create gain parameters
-        self._create_gain_parameters()
-
-    def _create_gain_parameters(self) -> None:
-        """Create gain parameters for each channel. Only called if _max_gain is set."""
-        if self._max_gain is None:
-            return
-
-        for ch in range(1, self._num_channels + 1):
-            self.add_parameter(
-                name=f"gain_ch{ch}",
-                label=f"TIA Gain Channel {ch}",
-                get_cmd=f"DLEV? {self.module},{ch}",
-                set_cmd=f"DLEV {self.module},{ch} {{:d}}",
-                get_parser=lambda s: int(float(s.strip())),
-                vals=vals.Ints(1, self._max_gain),
-            )
-
     def _get_calibration_wavelengths(self) -> float:
         """Get calibration wavelength for current index setpoint."""
-        wavelengths = []
-        for idx in range(1, 21):
-            wl = self._parent.ask(f"CWAV? {self.module},{idx}").strip()  # Validate indices
-            wavelengths.append(float(wl))
-        return np.array(wl)
-
-    def _get_calibration_power_offset(self, channel: int) -> float:
-        """Get calibration power offset for specified channel and current index setpoint."""
-        idx = self.calibration_index()
-        if not 1 <= idx <= 20:
-            raise ValueError(f"Calibration index must be 1-20, got {idx}")
-        if not 1 <= channel <= self._num_channels:
-            raise ValueError(f"Channel must be 1-{self._num_channels}, got {channel}")
-        response = self._parent.ask(f"CWAVPO? {self.module},{channel},{idx}").strip()
-        return float(response)
+        wavelengths = np.empty(20)
+        for idx in range(20):
+            wl = self._parent.ask(f"CWAV? {self.module},{idx + 1}").strip()  # Validate indices
+            wavelengths[idx] = float(wl)
+        return wavelengths
 
     def get_idn(self) -> Dict[str, str]:
         """Get module identification information."""
@@ -178,38 +167,6 @@ class _SantecMPMxxxModule(InstrumentChannel):
             )
 
         return dict(zip(("vendor", "model", "serial", "firmware"), parts))
-
-    def get_calibration_data(self, idx: int) -> Dict:
-        """
-        Get calibration wavelength and power offset values for all channels.
-
-        Args:
-            idx: Calibration wavelength index (1-20)
-
-        Returns:
-            Dictionary mapping channel number to dict with 'wavelength' and 'power_offset' keys.
-            Example: {1: {'wavelength': 1550.0, 'power_offset': 0.123}, ...}
-
-        Raises:
-            ValueError: If idx is not in valid range (1-20)
-        """
-        if not 1 <= idx <= 20:
-            raise ValueError(f"Calibration wavelength index must be 1-20, got {idx}")
-
-        # Get calibration wavelength
-        response = self._parent.ask(f"CWAV? {self.module},{idx}").strip()
-        wavelength = float(response)
-
-        # Get power offset values for each channel
-        calibration_data = {}
-        for ch in range(1, self._num_channels + 1):
-            response = self._parent.ask(f"CWAVPO? {self.module},{ch},{idx}").strip()
-            calibration_data[ch] = {
-                "wavelength": wavelength,
-                "power_offset": float(response),
-            }
-
-        return calibration_data
 
     def read(self) -> Dict[str, float]:
         """Execute optical power measurement and return results for all channels."""
@@ -348,7 +305,7 @@ class SantecMPM220(IPInstrument):
             label="Sweep Start Wavelength",
             unit="nm",
             get_cmd="WSET?",
-            set_cmd=None,
+            set_cmd=self._set_sweep_start,
             get_parser=lambda s: float(s.strip().split(",")[0]),
             vals=vals.Numbers(1250, 1630),
         )
@@ -359,7 +316,7 @@ class SantecMPM220(IPInstrument):
             label="Sweep Stop Wavelength",
             unit="nm",
             get_cmd="WSET?",
-            set_cmd=None,
+            set_cmd=self._set_sweep_stop,
             get_parser=lambda s: float(s.strip().split(",")[1]),
             vals=vals.Numbers(1250, 1630),
         )
@@ -370,7 +327,7 @@ class SantecMPM220(IPInstrument):
             label="Sweep Step",
             unit="nm",
             get_cmd="WSET?",
-            set_cmd=None,
+            set_cmd=self._set_sweep_step,
             get_parser=lambda s: float(s.strip().split(",")[2]),
             vals=vals.Numbers(0.001, 10),
         )
@@ -527,3 +484,21 @@ class SantecMPM220(IPInstrument):
     def reset(self) -> None:
         """Reset instrument to factory defaults."""
         self.write("*RST")
+
+    def _set_sweep_start(self, value: float) -> None:
+        """Set sweep start wavelength while preserving stop and step."""
+        response = self.ask("WSET?").strip()
+        _, stop, step = response.split(",")
+        self.write(f"WSET {value:.3f},{stop},{step}")
+
+    def _set_sweep_stop(self, value: float) -> None:
+        """Set sweep stop wavelength while preserving start and step."""
+        response = self.ask("WSET?").strip()
+        start, _, step = response.split(",")
+        self.write(f"WSET {start},{value:.3f},{step}")
+
+    def _set_sweep_step(self, value: float) -> None:
+        """Set sweep step while preserving start and stop."""
+        response = self.ask("WSET?").strip()
+        start, stop, _ = response.split(",")
+        self.write(f"WSET {start},{stop},{value:.3f}")
