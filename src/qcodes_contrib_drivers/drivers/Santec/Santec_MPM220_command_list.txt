@@ -1,0 +1,37 @@
+1) System-related commands
+Command Description Page
+
+*IDN? Identification Query 28
+ERR? Check Error information. 28
+IDIS? Check recognition of MM for MPM-220. 29
+MMVER? Identification query of a module type 29
+ADDR/ADDR? Sets/Reads out the GPIB address. 29
+GW/GW? Sets/Reads out the Gateway Address. 30
+SUBNET/SUBNET? Sets/Reads out the SUBNET Address. 30
+IP/IP? Sets/Reads out the IP Address. 31
+
+2) Measurement-related commands
+Command Description Page
+
+TRIG/TRIG? Sets up/Reads out the trigger mode. 31
+WMOD/WMOD? Sets up/Reads out the measurement mode. 32
+WAV/WAV? Sets up/Reads out the measurement wavelength of Constant wavelength Measurement Mode (CONST1, CONST2, READ). 33
+DWAV/DWAV? Sets up/Reads out the measurement wavelength of Constant wavelength Measurement Mode (CONST1, CONST2, READ) for each channel. 33
+WSET/WSET? Sets up /Reads out the measurement wavelength of Sweep Wavelength Measurement Mode (SWEEP1, SWEEP2). 34
+SPE/SPE? Sets up/Reads out the Wavelength Sweep Speed 35
+LEV/LEV? Sets up/Reads out TIA Gain for CONST1, SWEEP1, AUTO1 measuring mode. 35
+DLEV/DLEV? Sets up/Reads out TIA Gain for CONST1, SWEEP1, AUTO1 measuring mode for each channel. 36
+AVG/AVG? Sets up/Reads out Average Time. 37
+FGSAVG/FGSAVG? Sets up/Reads out Average Time. (This command is same operation as “AVG”.) 38
+UNIT/UNIT? Sets up/Reads out measuring unit of optical power or electrical current. 38
+AUTO/AUTO? Sets up/Reads out the power range (Auto or Manual). 39
+DAUTO/DAUTO? Sets up/Reads out the power range (Auto or Manual) for each channel. 39
+READ? Execute optical power or electrical current measurement and check the result. 40
+CWAV? Checks the wavelength that should be calibrated. 40
+CWAVPO? Checks Power calibration value of the wavelength of “CWAV?” command Index. 41
+MEAS Command to start measuring. 41
+STOP Command to stop measuring. 41
+STAT? Checks the measuring status. 42
+LOGN/LOGN? Sets up/Reads out measurement data point in CONST1/CONST2/FREERUN measuring mode. 42
+LOGG? Read out the logging data. 42
+ZERO Before measuring optical power, run Zeroing to delete electrical DC offset. 43
