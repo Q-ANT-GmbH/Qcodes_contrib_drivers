@@ -556,8 +556,28 @@ class RigolDG5000Pro(VisaInstrument):
 def connect_awg_scope(devices: dict):
     from qcodes_contrib_drivers.drivers.Rigol.Rigol_DS8000R import RigolDS8000R
 
+    def _close_existing(name: str) -> None:
+        try:
+            existing = Instrument.find_instrument(name)
+        except KeyError:
+            return
+
+        try:
+            existing.close()
+        except Exception:
+            try:
+                Instrument.remove_instance(existing)
+            except Exception:
+                pass
+
     awg_ip = devices["rigol_awg"]["ip"]
     scope_ip = devices["rigol_oscilloscope"]["ip"]
+
+    # Reloading driver modules in notebooks creates a new class object, which can
+    # confuse find_or_create_instrument when an older instance with the same name
+    # is still registered. Drop any stale instances before recreating them.
+    _close_existing("my_awg")
+    _close_existing("my_scope")
 
     awg = find_or_create_instrument(
         RigolDG5000Pro,
