@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -686,3 +687,154 @@ class RigolDS8000R(VisaInstrument):
     def reset(self):
         """Resets the instrument to its factory default settings"""
         self.write("*RST")
+
+
+def configure_scope_for_ramp_capture(
+    scope,
+    enabled_scope_channels,
+    ramp_frequency_hz: float,
+    cycles_per_capture: float,
+    vertical_scale_v: float,
+    trigger_source: str,
+    trigger_level_v: float,
+    waveform_points: int,
+    waveform_format: str = "byte",
+    acquire_mdepth: str = "10k",
+    trigger_sweep: str = "normal",
+    trigger_edge: str = "rising",
+    trigger_coupling: str = "dc",
+):
+    for i, ch in enumerate(scope.channels):
+        if i in enabled_scope_channels:
+            ch.display("on")
+            ch.coupling("DC")
+            ch.impedance("50 Ohm")
+            ch.scale(float(vertical_scale_v))
+            try:
+                ch.offset(0.0)
+            except Exception:
+                try:
+                    scope.write(f":CHANnel{i + 1}:OFFSet 0")
+                except Exception:
+                    pass
+        else:
+            ch.display("off")
+
+    period = 1.0 / float(ramp_frequency_hz)
+    total_time = period * float(cycles_per_capture)
+
+    scope.timebase_scale(total_time / 10.0)
+    scope.acquire_mdepth(acquire_mdepth)
+    scope.waveform_mode("raw")
+    scope.waveform_format(str(waveform_format).lower())
+    scope.waveform_points(int(waveform_points))
+    scope.waveform_start(1)
+    scope.waveform_stop(int(waveform_points))
+
+    trig_source = str(trigger_source).strip().lower()
+    if trig_source in ("external", "ext"):
+        trig_source = "ext"
+
+    scope.trigger_mode("edge")
+    scope.trigger_sweep(str(trigger_sweep).lower())
+    scope.trigger_edge_source(trig_source)
+    scope.trigger_edge_level(float(trigger_level_v))
+
+    slope_map = {
+        "rising": "POS",
+        "rise": "POS",
+        "positive": "POS",
+        "falling": "NEG",
+        "fall": "NEG",
+        "negative": "NEG",
+    }
+    slope_scpi = slope_map.get(str(trigger_edge).strip().lower(), "POS")
+    coupling_scpi = str(trigger_coupling).strip().upper()
+
+    try:
+        scope.write(f":TRIGger:EDGe:SLOPe {slope_scpi}")
+    except Exception:
+        pass
+
+    try:
+        scope.write(f":TRIGger:COUPling {coupling_scpi}")
+    except Exception:
+        pass
+
+
+def acquire_scope_single(
+    scope,
+    scope_channels,
+    timeout_s=8.0,
+    force_trigger_on_timeout=False,
+    read_timeout_s=8.0,
+    trace_read_retries=2,
+):
+    scope.stop()
+    time.sleep(0.05)
+    scope.single()
+
+    t0 = time.time()
+    timed_out = True
+    while time.time() - t0 < timeout_s:
+        status = scope.trigger_status().strip().upper()
+        if status == "STOP":
+            timed_out = False
+            break
+        time.sleep(0.05)
+
+    if timed_out:
+        if not force_trigger_on_timeout:
+            raise TimeoutError(f"Scope acquisition timeout after {timeout_s:.1f}s")
+
+        print(f"Warning: trigger timeout after {timeout_s:.1f}s, forcing trigger.")
+        scope.trigger_force()
+
+        t1 = time.time()
+        while time.time() - t1 < 2.0:
+            status = scope.trigger_status().strip().upper()
+            if status == "STOP":
+                break
+            time.sleep(0.05)
+        else:
+            print("Warning: forced trigger did not reach STOP; reading latest available buffer.")
+
+    scope.stop()
+    time.sleep(0.1)
+
+    previous_timeout = None
+    if read_timeout_s is not None:
+        try:
+            previous_timeout = scope.timeout()
+            scope.timeout(float(read_timeout_s))
+        except Exception:
+            previous_timeout = None
+
+    try:
+        t_axis = np.asarray(scope.timebase_axis())
+        traces = {}
+
+        for idx in scope_channels:
+            channel_name = f"CH{idx + 1}"
+            for read_attempt in range(1, int(trace_read_retries) + 1):
+                try:
+                    trace = np.asarray(scope.channels[idx].trace())
+                    if trace.size == 0:
+                        raise RuntimeError(f"{channel_name} returned empty waveform data.")
+                    traces[idx] = trace
+                    break
+                except Exception as exc:
+                    if read_attempt >= int(trace_read_retries):
+                        raise RuntimeError(
+                            f"Failed to read waveform from {channel_name} after {trace_read_retries} attempts."
+                        ) from exc
+                    scope.stop()
+                    time.sleep(0.05)
+
+        return t_axis, traces
+    finally:
+        if read_timeout_s is not None and previous_timeout is not None:
+            try:
+                scope.timeout(previous_timeout)
+            except Exception:
+                pass

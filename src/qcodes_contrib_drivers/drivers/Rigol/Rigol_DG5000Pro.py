@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Union
 
 from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument, \
-    ChannelList
+    ChannelList, find_or_create_instrument
 from qcodes.parameters import Parameter
 from qcodes.parameters import create_on_off_val_mapping
 from qcodes.validators import Enum, Ints, MultiType, Numbers, Strings
@@ -551,3 +551,333 @@ class RigolDG5000Pro(VisaInstrument):
     def wait(self):
         """Waits for all the pending operations to complete"""
         self.write("*WAI")
+
+
+def connect_awg_scope(devices: dict):
+    from qcodes_contrib_drivers.drivers.Rigol.Rigol_DS8000R import RigolDS8000R
+
+    awg_ip = devices["rigol_awg"]["ip"]
+    scope_ip = devices["rigol_oscilloscope"]["ip"]
+
+    awg = find_or_create_instrument(
+        RigolDG5000Pro,
+        "my_awg",
+        address=f"TCPIP::{awg_ip}::INSTR",
+        recreate=True,
+    )
+    scope = find_or_create_instrument(
+        RigolDS8000R,
+        "my_scope",
+        address=f"TCPIP::{scope_ip}::INSTR",
+        recreate=True,
+    )
+
+    try:
+        scope.timeout(5.0)
+    except Exception:
+        pass
+
+    return awg, scope
+
+
+def turn_off_awg_channels(awg):
+    for ch in awg.channels:
+        ch.output_state("off")
+
+
+def _apply_dc_level(awg, ch_idx: int, dc_voltage: float):
+    ch_num = int(ch_idx) + 1
+    ch = awg.channels[ch_idx]
+
+    ch.source_apply_square(
+        frequency=1.0,
+        amplitude=0.0,
+        offset=float(dc_voltage),
+        phase=0.0,
+    )
+    try:
+        awg.write(f":SOURce{ch_num}:FUNC:SQU:DCYC 100")
+    except Exception:
+        pass
+    ch.output_polarity("normal")
+
+
+def _normalize_awg_trigger_source(trigger_source: str) -> str:
+    src = str(trigger_source).strip().lower()
+    if src in ("ext", "external"):
+        return "external"
+    if src in ("imm", "immediate", "int", "internal"):
+        return "immediate"
+    if src == "bus":
+        return "bus"
+    if src in ("tim", "timer"):
+        return "timer"
+    raise ValueError(f"Unsupported AWG trigger_source={trigger_source!r}")
+
+
+def _normalize_awg_trigger_edge(trigger_edge: str) -> str:
+    edge = str(trigger_edge).strip().lower()
+    if edge in ("leading", "rising", "rise", "positive", "pos"):
+        return "positive"
+    if edge in ("trailing", "falling", "fall", "negative", "neg"):
+        return "negative"
+    raise ValueError(f"Unsupported AWG trigger_edge={trigger_edge!r}")
+
+
+def _normalize_awg_idle_level(idle_level):
+    if isinstance(idle_level, (int, float)):
+        return int(idle_level)
+
+    idle = str(idle_level).strip().upper().replace(" ", "")
+    if idle in ("FPT", "FIRSTPOINT", "FIRSTPT", "1STPT"):
+        return "FPT"
+    if idle in ("TOP", "CENT", "BOTT"):
+        return idle
+
+    raise ValueError(f"Unsupported AWG idle_level={idle_level!r}")
+
+
+def _set_awg_burst_cycles(awg, ch_idx: int, burst_cycles):
+    ch_num = int(ch_idx) + 1
+    cyc = str(burst_cycles).strip().upper()
+
+    if cyc in ("INF", "INFINITE", "INFINITY"):
+        cmds = [
+            f":SOURce{ch_num}:BURSt:NCYCles INF",
+            f":SOURce{ch_num}:BURSt:NCYCles INFinity",
+        ]
+    else:
+        cyc_val = int(burst_cycles)
+        if cyc_val < 1:
+            raise ValueError("AWG burst cycles must be >= 1 or INF.")
+        cmds = [f":SOURce{ch_num}:BURSt:NCYCles {cyc_val}"]
+
+    last_exc = None
+    for cmd in cmds:
+        try:
+            awg.write(cmd)
+            return
+        except Exception as exc:
+            last_exc = exc
+
+    if last_exc is not None:
+        raise last_exc
+
+
+def _normalize_awg_burst_mode(burst_mode: str) -> str:
+    mode = str(burst_mode).strip().lower()
+    if mode in ("trig", "triggered", "burst"):
+        return "triggered"
+    if mode in ("gat", "gated", "gate"):
+        return "gated"
+    if mode in ("inf", "infinity", "infinite"):
+        return "infinity"
+    raise ValueError(f"Unsupported AWG burst_mode={burst_mode!r}")
+
+
+def _configure_awg_ramp_trigger(
+    awg,
+    ch_idx: int,
+    trigger_source="external",
+    trigger_edge="leading",
+    burst_mode="burst",
+    burst_cycles="INF",
+    idle_level="FPT",
+):
+    ch_num = int(ch_idx) + 1
+    ch = awg.channels[ch_idx]
+
+    src = _normalize_awg_trigger_source(trigger_source)
+    edge = _normalize_awg_trigger_edge(trigger_edge)
+    idle = _normalize_awg_idle_level(idle_level)
+    mode = _normalize_awg_burst_mode(burst_mode)
+
+    try:
+        ch.source_burst_state(True)
+    except Exception:
+        awg.write(f":SOURce{ch_num}:BURSt:STATe ON")
+
+    mode_scpi = {"triggered": "TRIG", "gated": "GAT", "infinity": "INF"}[mode]
+    try:
+        ch.source_burst_mode(mode)
+    except Exception:
+        awg.write(f":SOURce{ch_num}:BURSt:MODE {mode_scpi}")
+
+    src_scpi = {
+        "immediate": "IMM",
+        "external": "EXT",
+        "bus": "BUS",
+        "timer": "TIM",
+    }[src]
+    try:
+        ch.trigger_source(src)
+    except Exception:
+        awg.write(f":TRIGger{ch_num}:SOURce {src_scpi}")
+
+    edge_scpi = {"positive": "POS", "negative": "NEG"}[edge]
+    try:
+        ch.trigger_slope(edge)
+    except Exception:
+        awg.write(f":TRIGger{ch_num}:SLOPe {edge_scpi}")
+
+    try:
+        ch.output_idle(idle)
+    except Exception:
+        awg.write(f":OUTPut{ch_num}:IDLE {idle}")
+
+    if mode == "triggered":
+        _set_awg_burst_cycles(awg=awg, ch_idx=ch_idx, burst_cycles=burst_cycles)
+
+
+def _configure_awg_constant_dc_hold(awg, ch_idx: int):
+    ch_num = int(ch_idx) + 1
+    ch = awg.channels[ch_idx]
+
+    try:
+        ch.source_burst_state(False)
+    except Exception:
+        awg.write(f":SOURce{ch_num}:BURSt:STATe OFF")
+
+    try:
+        ch.trigger_source("immediate")
+    except Exception:
+        awg.write(f":TRIGger{ch_num}:SOURce IMM")
+
+    try:
+        awg.write(f":SYNChro:BUNDle CH{ch_num},OFF")
+    except Exception:
+        pass
+
+
+def _readback_awg_trigger_config(ch):
+    out = {}
+    for key, getter in (
+        ("burst_state", ch.source_burst_state),
+        ("burst_mode", ch.source_burst_mode),
+        ("trigger_source", ch.trigger_source),
+        ("trigger_slope", ch.trigger_slope),
+        ("output_idle", ch.output_idle),
+    ):
+        try:
+            out[key] = getter()
+        except Exception:
+            out[key] = "N/A"
+    return out
+
+
+def _sync_awg_channels(awg, channel_indices):
+    if not channel_indices:
+        return
+
+    channel_numbers = sorted({idx + 1 for idx in channel_indices})
+    benchmark = channel_numbers[0]
+    awg.write(f":SYNChro:BENChmark CH{benchmark}")
+
+    for ch_num in channel_numbers[1:]:
+        awg.write(f":SYNChro:BUNDle CH{ch_num},ON")
+
+    awg.write(f":SOURce{benchmark}:PHASe:SYNChronize")
+    awg.ask("*OPC?")
+    time.sleep(0.1)
+
+
+def configure_awg_for_mzm(
+    awg,
+    active_mzm: int,
+    mzm_awg_map: dict,
+    ramp_frequency_hz: float,
+    volt_min: float,
+    volt_max: float,
+    bias_lookup: dict,
+    output_load="INF",
+    ramp_trigger_source="external",
+    ramp_trigger_edge="leading",
+    ramp_burst_mode="burst",
+    ramp_cycles="INF",
+    ramp_idle_level="FPT",
+    ramp_symmetry_pct=0.0,
+):
+    amplitude = abs(float(volt_max) - float(volt_min))
+    if amplitude == 0:
+        raise ValueError("volt_min and volt_max cannot be equal.")
+
+    offset = 0.5 * (float(volt_max) + float(volt_min))
+
+    for _, (ch_pos_idx, ch_neg_idx) in mzm_awg_map.items():
+        ch_pos = awg.channels[ch_pos_idx]
+        ch_neg = awg.channels[ch_neg_idx]
+        ch_pos.output_state("off")
+        ch_neg.output_state("off")
+        ch_pos.output_load(output_load)
+        ch_neg.output_load(output_load)
+    awg.ask("*OPC?")
+
+    for mzm_num, (ch_pos_idx, ch_neg_idx) in mzm_awg_map.items():
+        if mzm_num == active_mzm:
+            continue
+
+        ch_pos = awg.channels[ch_pos_idx]
+        ch_neg = awg.channels[ch_neg_idx]
+
+        bias_v = float(bias_lookup.get(mzm_num, 0.0))
+        _apply_dc_level(awg=awg, ch_idx=ch_pos_idx, dc_voltage=+bias_v)
+        _apply_dc_level(awg=awg, ch_idx=ch_neg_idx, dc_voltage=-bias_v)
+        _configure_awg_constant_dc_hold(awg=awg, ch_idx=ch_pos_idx)
+        _configure_awg_constant_dc_hold(awg=awg, ch_idx=ch_neg_idx)
+
+        ch_pos.output_state("on")
+        ch_neg.output_state("on")
+
+    awg.ask("*OPC?")
+
+    ch_pos_idx, ch_neg_idx = mzm_awg_map[active_mzm]
+    ch_pos = awg.channels[ch_pos_idx]
+    ch_neg = awg.channels[ch_neg_idx]
+
+    ch_pos.source_apply_ramp(
+        frequency=ramp_frequency_hz,
+        amplitude=amplitude,
+        offset=offset,
+        phase=0.0,
+        symmetry=ramp_symmetry_pct,
+    )
+    ch_pos.output_polarity("inverted")
+    _configure_awg_ramp_trigger(
+        awg=awg,
+        ch_idx=ch_pos_idx,
+        trigger_source=ramp_trigger_source,
+        trigger_edge=ramp_trigger_edge,
+        burst_mode=ramp_burst_mode,
+        burst_cycles=ramp_cycles,
+        idle_level=ramp_idle_level,
+    )
+
+    ch_neg.source_apply_ramp(
+        frequency=ramp_frequency_hz,
+        amplitude=amplitude,
+        offset=offset,
+        phase=0.0,
+        symmetry=ramp_symmetry_pct,
+    )
+    ch_neg.output_polarity("normal")
+    _configure_awg_ramp_trigger(
+        awg=awg,
+        ch_idx=ch_neg_idx,
+        trigger_source=ramp_trigger_source,
+        trigger_edge=ramp_trigger_edge,
+        burst_mode=ramp_burst_mode,
+        burst_cycles=ramp_cycles,
+        idle_level=ramp_idle_level,
+    )
+
+    awg.ask("*OPC?")
+
+    ch_pos.output_state("on")
+    ch_neg.output_state("on")
+
+    awg.ask("*OPC?")
+
+    print(f"    AWG CH{ch_pos_idx + 1} trigger cfg: {_readback_awg_trigger_config(ch_pos)}")
+    print(f"    AWG CH{ch_neg_idx + 1} trigger cfg: {_readback_awg_trigger_config(ch_neg)}")
+
+    _sync_awg_channels(awg, [ch_pos_idx, ch_neg_idx])
