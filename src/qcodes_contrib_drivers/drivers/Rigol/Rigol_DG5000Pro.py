@@ -6,6 +6,7 @@ from qcodes.parameters import Parameter
 from qcodes.parameters import create_on_off_val_mapping
 from qcodes.validators import Enum, Ints, MultiType, Numbers, Strings
 
+import numpy as np
 import time
 
 if TYPE_CHECKING:
@@ -899,5 +900,175 @@ def configure_awg_for_mzm(
 
     print(f"    AWG CH{ch_pos_idx + 1} trigger cfg: {_readback_awg_trigger_config(ch_pos)}")
     print(f"    AWG CH{ch_neg_idx + 1} trigger cfg: {_readback_awg_trigger_config(ch_neg)}")
+
+    _sync_awg_channels(awg, [ch_pos_idx, ch_neg_idx])
+
+
+def _upload_arb_staircase(awg, ch_idx, n_steps, samples_per_step=1):
+    """Build a normalized staircase waveform and upload it to volatile memory.
+
+    The staircase has *n_steps* levels linearly spaced from -1 to +1.
+    Each level is repeated *samples_per_step* times (default 1, which is
+    sufficient when the AWG uses zero-order-hold / step interpolation).
+    """
+    ch_num = int(ch_idx) + 1
+    n_steps = int(n_steps)
+
+    levels = np.linspace(-1.0, 1.0, n_steps)
+    waveform = np.repeat(levels, int(samples_per_step)) if samples_per_step > 1 else levels
+
+    data_str = ','.join(f'{v:.6f}' for v in waveform)
+
+    last_exc = None
+    for cmd in [
+        f':TRACe{ch_num}:DATA VOLATILE,{data_str}',
+        f':SOURce{ch_num}:TRACe:DATA VOLATILE,{data_str}',
+    ]:
+        try:
+            awg.write(cmd)
+            awg.ask('*OPC?')
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+
+    if last_exc is not None:
+        raise last_exc
+
+    # Select the uploaded volatile waveform.
+    try:
+        awg.write(f':SOURce{ch_num}:FUNCtion:ARBitrary VOLATILE')
+    except Exception:
+        pass
+
+    # Use step (sample-hold) interpolation so each level is flat.
+    try:
+        awg.write(f':SOURce{ch_num}:FUNCtion:ARBitrary:INTerpolation STEP')
+    except Exception:
+        pass
+
+
+def configure_awg_for_mzm_staircase(
+    awg,
+    active_mzm: int,
+    mzm_awg_map: dict,
+    ramp_frequency_hz: float,
+    volt_min: float,
+    volt_max: float,
+    bias_lookup: dict,
+    time_bins_per_period: int = 128,
+    samples_per_step: int = 1,
+    output_load="INF",
+    ramp_trigger_source="external",
+    ramp_trigger_edge="leading",
+    ramp_burst_mode="burst",
+    ramp_cycles=1,
+    ramp_idle_level="FPT",
+    **kwargs,
+):
+    """Configure AWG with a staircase (stepped) arb waveform for MZM calibration.
+
+    Replaces the continuous ramp used by :func:`configure_awg_for_mzm` with
+    *time_bins_per_period* discrete voltage steps spanning
+    [*volt_min*, *volt_max*].  The arb waveform plays at *ramp_frequency_hz*
+    so one complete staircase occupies ``1 / ramp_frequency_hz`` seconds and
+    each step lasts ``1 / (ramp_frequency_hz * time_bins_per_period)`` seconds.
+
+    Non-active MZMs are held at their DC bias levels, identical to the
+    continuous-ramp variant.
+    """
+    amplitude = abs(float(volt_max) - float(volt_min))
+    if amplitude == 0:
+        raise ValueError("volt_min and volt_max cannot be equal.")
+
+    offset = 0.5 * (float(volt_max) + float(volt_min))
+    n_steps = int(time_bins_per_period)
+
+    # --- Turn off all channels and set output impedance ---
+    for _, (ch_pos_idx, ch_neg_idx) in mzm_awg_map.items():
+        ch_pos = awg.channels[ch_pos_idx]
+        ch_neg = awg.channels[ch_neg_idx]
+        ch_pos.output_state("off")
+        ch_neg.output_state("off")
+        ch_pos.output_load(output_load)
+        ch_neg.output_load(output_load)
+    awg.ask("*OPC?")
+
+    # --- Non-active MZMs: hold at DC bias ---
+    for mzm_num, (ch_pos_idx, ch_neg_idx) in mzm_awg_map.items():
+        if mzm_num == active_mzm:
+            continue
+
+        ch_pos = awg.channels[ch_pos_idx]
+        ch_neg = awg.channels[ch_neg_idx]
+
+        bias_v = float(bias_lookup.get(mzm_num, 0.0))
+        _apply_dc_level(awg=awg, ch_idx=ch_pos_idx, dc_voltage=+bias_v)
+        _apply_dc_level(awg=awg, ch_idx=ch_neg_idx, dc_voltage=-bias_v)
+        _configure_awg_constant_dc_hold(awg=awg, ch_idx=ch_pos_idx)
+        _configure_awg_constant_dc_hold(awg=awg, ch_idx=ch_neg_idx)
+
+        ch_pos.output_state("on")
+        ch_neg.output_state("on")
+
+    awg.ask("*OPC?")
+
+    # --- Active MZM: staircase arb waveform ---
+    ch_pos_idx, ch_neg_idx = mzm_awg_map[active_mzm]
+    ch_pos = awg.channels[ch_pos_idx]
+    ch_neg = awg.channels[ch_neg_idx]
+
+    # Upload the staircase to both channels.
+    _upload_arb_staircase(awg, ch_pos_idx, n_steps, samples_per_step)
+    _upload_arb_staircase(awg, ch_neg_idx, n_steps, samples_per_step)
+
+    # Configure arb output parameters.
+    ch_pos.source_apply_arb(
+        frequency=ramp_frequency_hz,
+        amplitude=amplitude,
+        offset=offset,
+        phase=0.0,
+    )
+    ch_pos.output_polarity("inverted")
+    _configure_awg_ramp_trigger(
+        awg=awg,
+        ch_idx=ch_pos_idx,
+        trigger_source=ramp_trigger_source,
+        trigger_edge=ramp_trigger_edge,
+        burst_mode=ramp_burst_mode,
+        burst_cycles=ramp_cycles,
+        idle_level=ramp_idle_level,
+    )
+
+    ch_neg.source_apply_arb(
+        frequency=ramp_frequency_hz,
+        amplitude=amplitude,
+        offset=offset,
+        phase=0.0,
+    )
+    ch_neg.output_polarity("normal")
+    _configure_awg_ramp_trigger(
+        awg=awg,
+        ch_idx=ch_neg_idx,
+        trigger_source=ramp_trigger_source,
+        trigger_edge=ramp_trigger_edge,
+        burst_mode=ramp_burst_mode,
+        burst_cycles=ramp_cycles,
+        idle_level=ramp_idle_level,
+    )
+
+    awg.ask("*OPC?")
+
+    ch_pos.output_state("on")
+    ch_neg.output_state("on")
+
+    awg.ask("*OPC?")
+
+    print(f"    AWG CH{ch_pos_idx + 1} trigger cfg: {_readback_awg_trigger_config(ch_pos)}")
+    print(f"    AWG CH{ch_neg_idx + 1} trigger cfg: {_readback_awg_trigger_config(ch_neg)}")
+    print(
+        f"    Staircase: {n_steps} steps, arb freq={ramp_frequency_hz:.2f} Hz, "
+        f"step duration={1.0 / (ramp_frequency_hz * n_steps):.3e} s"
+    )
 
     _sync_awg_channels(awg, [ch_pos_idx, ch_neg_idx])
