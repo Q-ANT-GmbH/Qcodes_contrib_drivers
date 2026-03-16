@@ -910,6 +910,16 @@ def _upload_arb_staircase(awg, ch_idx, n_steps, samples_per_step=1):
     The staircase has *n_steps* levels linearly spaced from -1 to +1.
     Each level is repeated *samples_per_step* times (default 1, which is
     sufficient when the AWG uses zero-order-hold / step interpolation).
+
+        Prefers the built-in ``STAIRUP`` arb shape on DG5000 Pro firmware, which
+        avoids vendor-specific raw upload commands that may be unsupported.
+
+        If built-in selection fails, tries multiple SCPI upload variants:
+            1. Binary DAC  — ``:TRACe<n>:DATA:DAC VOLATILE,END,#...``
+            2. ASCII float — ``:TRACe<n>:DATA VOLATILE,<csv>``
+            3. ASCII float — ``:SOURce<n>:DATA VOLATILE,<csv>``
+        After each attempt the error queue is checked; the first variant that
+        succeeds is used.
     """
     ch_num = int(ch_idx) + 1
     n_steps = int(n_steps)
@@ -917,29 +927,120 @@ def _upload_arb_staircase(awg, ch_idx, n_steps, samples_per_step=1):
     levels = np.linspace(-1.0, 1.0, n_steps)
     waveform = np.repeat(levels, int(samples_per_step)) if samples_per_step > 1 else levels
 
-    data_str = ','.join(f'{v:.6f}' for v in waveform)
+    # ---------- helpers ----------
+    def _drain_errors():
+        """Read all queued errors and return the first non-zero one (or None)."""
+        first_err = None
+        for _ in range(20):
+            err = awg.ask(':SYSTem:ERRor?')
+            if err.startswith('0,') or err.startswith('+0,'):
+                break
+            if first_err is None:
+                first_err = err
+        return first_err
 
-    last_exc = None
-    for cmd in [
-        f':TRACe{ch_num}:DATA VOLATILE,{data_str}',
-        f':SOURce{ch_num}:TRACe:DATA VOLATILE,{data_str}',
-    ]:
-        try:
-            awg.write(cmd)
-            awg.ask('*OPC?')
-            last_exc = None
-            break
-        except Exception as exc:
-            last_exc = exc
+    def _try_binary_dac():
+        """Binary 16-bit signed upload via :TRACe<n>:DATA:DAC."""
+        dac_values = np.clip(
+            np.round(waveform * 32767), -32768, 32767
+        ).astype(np.int16)
+        data_bytes = dac_values.tobytes()
+        byte_count_str = str(len(data_bytes))
+        block_header = f'#{len(byte_count_str)}{byte_count_str}'
+        cmd_prefix = f':TRACe{ch_num}:DATA:DAC VOLATILE,END,'
+        raw_cmd = (
+            cmd_prefix.encode('ascii')
+            + block_header.encode('ascii')
+            + data_bytes
+        )
+        awg.visa_handle.write_raw(raw_cmd)
+        awg.ask('*OPC?')
+        return _drain_errors()
 
-    if last_exc is not None:
-        raise last_exc
+    def _try_ascii(prefix):
+        """ASCII float upload (values in -1..+1)."""
+        data_str = ','.join(f'{v:.6f}' for v in waveform)
+        awg.write(f'{prefix}{ch_num}:DATA VOLATILE,{data_str}')
+        awg.ask('*OPC?')
+        return _drain_errors()
 
-    # Select the uploaded volatile waveform.
+    # ---------- prefer built-in staircase arb first ----------
+    awg.write("*CLS")
+    _drain_errors()
     try:
-        awg.write(f':SOURce{ch_num}:FUNCtion:ARBitrary VOLATILE')
+        awg.write(f":SOURce{ch_num}:FUNCtion:ARBitrary STAIRUP")
+        awg.ask("*OPC?")
+        err = _drain_errors()
+        if err is None:
+            print("  _upload_arb_staircase: using built-in arb 'STAIRUP'")
+            try:
+                awg.write(f':SOURce{ch_num}:FUNCtion:ARBitrary:INTerpolation STEP')
+            except Exception:
+                pass
+            return
     except Exception:
         pass
+
+    # ---------- attempt each upload variant ----------
+    awg.write('*CLS')
+    _drain_errors()
+
+    attempts = [
+        ('binary :TRACe:DATA:DAC', _try_binary_dac),
+        ('ASCII  :TRACe:DATA',     lambda: _try_ascii(':TRACe')),
+        ('ASCII  :SOURce:DATA',    lambda: _try_ascii(':SOURce')),
+    ]
+
+    last_err = None
+    upload_ok = False
+    for label, fn in attempts:
+        awg.write('*CLS')
+        _drain_errors()
+        try:
+            err = fn()
+        except Exception as exc:
+            last_err = f'{label}: {exc}'
+            continue
+        if err is None:
+            print(f'  _upload_arb_staircase: succeeded with {label}')
+            upload_ok = True
+            break
+        last_err = f'{label}: {err}'
+    if upload_ok:
+        # Select the uploaded volatile waveform.
+        awg.write(f':SOURce{ch_num}:FUNCtion:ARBitrary VOLATILE')
+    else:
+        # Some DG5000 Pro firmware variants do not expose SCPI upload commands
+        # for volatile arb data. Fall back to a built-in staircase arb shape.
+        fallback_candidates = (
+            "STAIRUP",
+            "STAIR",
+            "RAMPUP",
+            "UPSTAIR",
+        )
+        fallback_used = None
+        for name in fallback_candidates:
+            awg.write("*CLS")
+            _drain_errors()
+            try:
+                awg.write(f":SOURce{ch_num}:FUNCtion:ARBitrary {name}")
+                awg.ask("*OPC?")
+                err = _drain_errors()
+            except Exception:
+                continue
+            if err is None:
+                fallback_used = name
+                break
+
+        if fallback_used is None:
+            raise RuntimeError(
+                f"All upload methods failed for CH{ch_num}. Last error: {last_err}. "
+                "Also failed to select any built-in staircase arb waveform."
+            )
+
+        print(
+            f"  _upload_arb_staircase: upload unsupported; using built-in arb '{fallback_used}'"
+        )
 
     # Use step (sample-hold) interpolation so each level is flat.
     try:
