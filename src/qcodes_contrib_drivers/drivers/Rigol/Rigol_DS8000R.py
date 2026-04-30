@@ -703,6 +703,7 @@ def configure_scope_for_ramp_capture(
     trigger_sweep: str = "normal",
     trigger_edge: str = "rising",
     trigger_coupling: str = "dc",
+    vertical_offset_v: float = 0.0,
 ):
     for i, ch in enumerate(scope.channels):
         if i in enabled_scope_channels:
@@ -711,10 +712,10 @@ def configure_scope_for_ramp_capture(
             ch.impedance("50 Ohm")
             ch.scale(float(vertical_scale_v))
             try:
-                ch.offset(0.0)
+                ch.offset(float(vertical_offset_v))
             except Exception:
                 try:
-                    scope.write(f":CHANnel{i + 1}:OFFSet 0")
+                    scope.write(f":CHANnel{i + 1}:OFFSet {float(vertical_offset_v)}")
                 except Exception:
                     pass
         else:
