@@ -704,6 +704,8 @@ def configure_scope_for_ramp_capture(
     trigger_edge: str = "rising",
     trigger_coupling: str = "dc",
     vertical_offset_v: float = 0.0,
+    apply_timebase_scale: bool = False,
+    apply_acquire_mdepth: bool = False,
 ):
     for i, ch in enumerate(scope.channels):
         if i in enabled_scope_channels:
@@ -724,8 +726,10 @@ def configure_scope_for_ramp_capture(
     period = 1.0 / float(ramp_frequency_hz)
     total_time = period * float(cycles_per_capture)
 
-    scope.timebase_scale(total_time / 10.0)
-    scope.acquire_mdepth(acquire_mdepth)
+    if bool(apply_timebase_scale):
+        scope.timebase_scale(total_time / 10.0)
+    if bool(apply_acquire_mdepth):
+        scope.acquire_mdepth(acquire_mdepth)
     scope.waveform_mode("raw")
     scope.waveform_format(str(waveform_format).lower())
     scope.waveform_points(int(waveform_points))
