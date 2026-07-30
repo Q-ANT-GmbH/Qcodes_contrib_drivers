@@ -4,64 +4,98 @@ Provides instrument-level driver, trace/channel abstraction and data retrieval h
 """
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
-from qcodes import ChannelTuple
-from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument
-from qcodes.parameters import Parameter, create_on_off_val_mapping, ParamRawDataType
-from qcodes.validators import Enum, Ints, Strings
+from qcodes.instrument import (
+    ChannelTuple,
+    Instrument,
+    InstrumentBaseKWArgs,
+    InstrumentChannel,
+    VisaInstrument,
+    VisaInstrumentKWArgs,
+)
+from qcodes.parameters import (
+    Parameter,
+    ParameterWithSetpoints,
+    create_on_off_val_mapping,
+    ParamRawDataType,
+)
+from qcodes.validators import Arrays, Enum, Ints, Strings
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
+    from qcodes.parameters import ParameterKWArgs
 
 log = logging.getLogger(__name__)
 
 
 class YokogawaData(Parameter):
-    """Parameter class to read binary trace data from the instrument.
+    """Parameter reading a binary trace block from the instrument.
 
-    Supports REAL64 and REAL32 formats and returns a NumPy array.
+    Supports REAL64 and REAL32 formats and returns a NumPy array. Used for the
+    wavelength (setpoint) axis; the level data that carries this axis as its
+    setpoints is read by :class:`YokogawaDataWithSetpoints`.
     """
 
-    def __init__(self, name: str, format: str = 'REAL64', get_cmd: "str | None" = None, **kwargs) -> None:
+    # Map the instrument data format to the pyvisa/struct datatype code.
+    _DATATYPES = {'REAL64': 'd', 'REAL32': 'f'}
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        data_format: str = 'REAL64',
+        get_cmd: "str | None" = None,
+        **kwargs: "Unpack[ParameterKWArgs]",
+    ) -> None:
         super().__init__(name, **kwargs)
 
-        if format not in ['REAL64', 'REAL32']:
-            raise NotImplementedError
+        if data_format not in self._DATATYPES:
+            raise ValueError(f"Unsupported format {data_format!r}; expected 'REAL64' or 'REAL32'")
+        if get_cmd is None:
+            raise ValueError("YokogawaData requires a get_cmd")
 
-        self.format = format
+        self.data_format = data_format
         self.get_cmd = get_cmd
 
     def get_raw(self) -> ParamRawDataType:
         """Retrieve raw binary data for this parameter and return as numpy.ndarray.
 
-        The method sets the instrument data format, sends the get command and parses
-        the binary block returned by the instrument into a NumPy array (float64 or float32).
+        Sets the instrument data format, then queries and parses the IEEE-488.2
+        definite-length binary block via pyvisa's ``query_binary_values``. The
+        AQ637x transmits low-order bytes first, i.e. little-endian
+        (``is_big_endian=False``).
         """
+        instrument = cast("YokogawaAQ637x", self.root_instrument)
+
         # Set data format
-        self.root_instrument.format_data(self.format)
+        instrument.format_data(self.data_format)
 
-        # Read data
-        self.root_instrument.write(self.get_cmd)
-        bytestream = self.root_instrument.visa_handle.read_raw()
-        n = int(bytestream[1:2].decode("ascii"))
-        l = int(bytestream[2:2 + n].decode("ascii"))
-        data = bytestream[2 + n:].strip()
+        # Query and parse the binary block
+        return instrument.visa_handle.query_binary_values(
+            self.get_cmd,
+            datatype=self._DATATYPES[self.data_format],
+            is_big_endian=False,
+            container=np.ndarray,
+        )
 
-        # Convert to ndarray
-        if self.format == 'REAL64':
-            data = np.frombuffer(data, dtype=np.float64, count=l // 8)
-        elif self.format == 'REAL32':
-            data = np.frombuffer(data, dtype=np.float32, count=l // 4)
 
-        return data
+class YokogawaDataWithSetpoints(YokogawaData, ParameterWithSetpoints):
+    """Trace level (y) data that carries its wavelength axis as setpoints.
+
+    Reads the same IEEE-488.2 binary block as :class:`YokogawaData` but, being a
+    :class:`~qcodes.parameters.ParameterWithSetpoints`, it declares its wavelength
+    setpoint axis and an :class:`~qcodes.validators.Arrays` shape, so the data
+    integrates with the QCoDeS measurement/dataset system (the associated
+    wavelength axis is recorded automatically).
+    """
 
 
 class YokogawaAQ637xChannel(InstrumentChannel):
     """Channel representing a single trace on the Yokogawa OSA.
 
-    Exposes trace-specific parameters (state, attribute, data_x, data_y, etc.)
+    Exposes trace-specific parameters (state, attribute, trace_axis, data, etc.)
     and convenience commands for trace operations (activate, delete, set modes).
     """
 
@@ -73,7 +107,6 @@ class YokogawaAQ637xChannel(InstrumentChannel):
             **kwargs: "Unpack[InstrumentBaseKWArgs]",
     ) -> None:
         super().__init__(parent, name, **kwargs)
-        self.model = self._parent.model
         self.trace = trace
 
         self.state: Parameter = self.add_parameter(
@@ -115,21 +148,36 @@ class YokogawaAQ637xChannel(InstrumentChannel):
         )
         """Number of sampled data points for this trace."""
 
-        self.data_x: YokogawaData = self.add_parameter(
-            "data_x",
+        self.trace_axis: YokogawaData = self.add_parameter(
+            "trace_axis",
             get_cmd=f":TRACe:DATA:X? {trace}",
             parameter_class=YokogawaData,
-            snapshot_value=False
+            unit="m",
+            label=f"{trace} axis",
+            vals=Arrays(shape=(self._sample_count,)),
+            snapshot_value=False,
         )
-        """Wavelength axis data for this trace."""
+        """X-axis data for this trace, the setpoints for `data`.
 
-        self.data_y: YokogawaData = self.add_parameter(
-            "data_y",
+        The unit follows `unit_x`: wavelength (m, the default and the declared
+        unit here), frequency (Hz) or wavenumber (1/m) on the AQ6375/AQ6375B.
+        """
+
+        self.data: YokogawaDataWithSetpoints = self.add_parameter(
+            "data",
             get_cmd=f":TRACe:DATA:Y? {trace}",
-            parameter_class=YokogawaData,
-            snapshot_value=False
+            parameter_class=YokogawaDataWithSetpoints,
+            unit="dBm",
+            label=f"{trace} level",
+            setpoints=(self.trace_axis,),
+            vals=Arrays(shape=(self._sample_count,)),
+            snapshot_value=False,
         )
-        """Level axis data for this trace."""
+        """Level data for this trace, with `trace_axis` as its setpoint axis."""
+
+    def _sample_count(self) -> int:
+        """Current number of sampled points, used as the trace-data array shape."""
+        return int(self.data_sample_number())
 
     def active(self) -> None:
         """Set trace in ACTIVE mode"""
@@ -187,7 +235,6 @@ class YokogawaAQ637xAutoMarker(InstrumentChannel):
             set_cmd=f"{base}:TRACe {{}}",
             get_cmd=f"{base}:TRACe?",
             vals=Enum("TRA", "TRB", "TRC", "TRD", "TRE", "TRF", "TRG"),
-            get_parser=str,
         )
         """Trace this marker is attached to (TRA–TRG)"""
 
@@ -323,39 +370,48 @@ class YokogawaAQ637x(VisaInstrument):
         self.model = self.get_idn()["model"]
         if self.model is None:
             raise KeyError("Could not determine model")
-        elif self.model not in self.MODELS:
-            raise KeyError("Model code " + self.model + " is not recognized")
+        if self.model not in self.MODELS:
+            raise KeyError(f"Model code {self.model} is not recognized")
 
-        # Create channels (called traces for OSA) with explicit properties for autocompletion
-        self.TRA = YokogawaAQ637xChannel(self, "TRA", "TRA")
-        self.TRB = YokogawaAQ637xChannel(self, "TRB", "TRB")
-        self.TRC = YokogawaAQ637xChannel(self, "TRC", "TRC")
-        self.TRD = YokogawaAQ637xChannel(self, "TRD", "TRD")
-        self.TRE = YokogawaAQ637xChannel(self, "TRE", "TRE")
-        self.TRF = YokogawaAQ637xChannel(self, "TRF", "TRF")
-        self.TRG = YokogawaAQ637xChannel(self, "TRG", "TRG")
+        # Create channels (called traces for OSA) and register each as a submodule
+        # so they appear in ``instrument.submodules`` and in the snapshot. The
+        # explicit attributes preserve autocompletion / static typing.
+        self.TRA = self.add_submodule("TRA", YokogawaAQ637xChannel(self, "TRA", "TRA"))
+        self.TRB = self.add_submodule("TRB", YokogawaAQ637xChannel(self, "TRB", "TRB"))
+        self.TRC = self.add_submodule("TRC", YokogawaAQ637xChannel(self, "TRC", "TRC"))
+        self.TRD = self.add_submodule("TRD", YokogawaAQ637xChannel(self, "TRD", "TRD"))
+        self.TRE = self.add_submodule("TRE", YokogawaAQ637xChannel(self, "TRE", "TRE"))
+        self.TRF = self.add_submodule("TRF", YokogawaAQ637xChannel(self, "TRF", "TRF"))
+        self.TRG = self.add_submodule("TRG", YokogawaAQ637xChannel(self, "TRG", "TRG"))
+        # Immutable view for iteration; ``snapshotable=False`` so the traces are
+        # not snapshotted twice (once here, once via their own submodules).
         self.traces = ChannelTuple(
             self,
-            "ch",
+            "traces",
             YokogawaAQ637xChannel,
             (self.TRA, self.TRB, self.TRC, self.TRD, self.TRE, self.TRF, self.TRG),
+            snapshotable=False,
         )
         """Instrument traces (aka channels)"""
+        self.add_submodule("traces", self.traces)
 
         # Advanced (auto) markers AMARker1..AMARker4
-        self.amarker1 = YokogawaAQ637xAutoMarker(self, "amarker1", 1)
-        self.amarker2 = YokogawaAQ637xAutoMarker(self, "amarker2", 2)
-        self.amarker3 = YokogawaAQ637xAutoMarker(self, "amarker3", 3)
-        self.amarker4 = YokogawaAQ637xAutoMarker(self, "amarker4", 4)
+        self.amarker1 = self.add_submodule("amarker1", YokogawaAQ637xAutoMarker(self, "amarker1", 1))
+        self.amarker2 = self.add_submodule("amarker2", YokogawaAQ637xAutoMarker(self, "amarker2", 2))
+        self.amarker3 = self.add_submodule("amarker3", YokogawaAQ637xAutoMarker(self, "amarker3", 3))
+        self.amarker4 = self.add_submodule("amarker4", YokogawaAQ637xAutoMarker(self, "amarker4", 4))
         self.amarkers = ChannelTuple(
             self,
             "amarkers",
             YokogawaAQ637xAutoMarker,
             (self.amarker1, self.amarker2, self.amarker3, self.amarker4),
+            snapshotable=False,
         )
         """Advanced/auto markers (AMARker1–AMARker4)"""
+        self.add_submodule("amarkers", self.amarkers)
 
-        ## Common Commands
+
+        # Common Commands (IEEE 488.2)
 
         self.event_status_enable: Parameter = self.add_parameter(
             "event_status_enable",
@@ -404,8 +460,264 @@ class YokogawaAQ637x(VisaInstrument):
         )
         """Run instrument self-test and return status code"""
 
-        ## Instrument specific commands
-        # Display Sub System Commands
+        # APPLication:DLOGging Sub System Commands
+
+        self.dlog_elapsed_time: Parameter = self.add_parameter(
+            "dlog_elapsed_time",
+            get_cmd=":APPLication:DLOGging:ETIMe?",
+            get_parser=int,
+            unit="s",
+        )
+        """Elapsed data-logging time (s)"""
+
+        self.dlog_interval: Parameter = self.add_parameter(
+            "dlog_interval",
+            set_cmd=":APPLication:DLOGging:LPARameter:INTerval {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:INTerval?",
+            vals=Ints(),
+            get_parser=int,
+        )
+        """Data-logging sampling interval"""
+
+        self.dlog_item: Parameter = self.add_parameter(
+            "dlog_item",
+            set_cmd=":APPLication:DLOGging:LPARameter:ITEM {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:ITEM?",
+            vals=Ints(0, 3),
+            get_parser=int,
+        )
+        """Data-logging item selection"""
+
+        self.dlog_lmode: Parameter = self.add_parameter(
+            "dlog_lmode",
+            set_cmd=":APPLication:DLOGging:LPARameter:LMODe {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:LMODe?",
+            vals=Ints(1, 2),
+            get_parser=int,
+        )
+        """Data-logging mode"""
+
+        self.dlog_memory: Parameter = self.add_parameter(
+            "dlog_memory",
+            set_cmd=":APPLication:DLOGging:LPARameter:MEMory {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:MEMory?",
+            val_mapping={
+                "INTERNAL": "INT",
+                "EXTERNAL": "EXT",
+            },
+        )
+        """Data-logging storage location (internal or external)"""
+
+        self.dlog_mthresh: Parameter = self.add_parameter(
+            "dlog_mthresh",
+            set_cmd=":APPLication:DLOGging:LPARameter:MTHResh {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:MTHResh?",
+            get_parser=float,
+        )
+        """Data-logging measurement threshold"""
+
+        self.dlog_pdetect_athresh: Parameter = self.add_parameter(
+            "dlog_pdetect_athresh",
+            set_cmd=":APPLication:DLOGging:LPARameter:PDETect:ATHResh {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:PDETect:ATHResh?",
+            get_parser=float,
+        )
+        """Peak-detection absolute threshold"""
+
+        self.dlog_pdetect_rthresh: Parameter = self.add_parameter(
+            "dlog_pdetect_rthresh",
+            set_cmd=":APPLication:DLOGging:LPARameter:PDETect:RTHResh {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:PDETect:RTHResh?",
+            get_parser=float,
+        )
+        """Peak-detection relative threshold"""
+
+        self.dlog_pdetect_ttype: Parameter = self.add_parameter(
+            "dlog_pdetect_ttype",
+            set_cmd=":APPLication:DLOGging:LPARameter:PDETect:TTYPe {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:PDETect:TTYPe?",
+            val_mapping={
+                "ABSOLUTE": "ABS",
+                "RELATIVE": "REL",
+            },
+        )
+        """Peak-detection threshold type (absolute or relative)"""
+
+        self.dlog_tduration: Parameter = self.add_parameter(
+            "dlog_tduration",
+            set_cmd=":APPLication:DLOGging:LPARameter:TDURation {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:TDURation?",
+            vals=Ints(),
+            get_parser=int,
+        )
+        """Data-logging total duration"""
+
+        self.dlog_tlogging: Parameter = self.add_parameter(
+            "dlog_tlogging",
+            set_cmd=":APPLication:DLOGging:LPARameter:TLOGging {}",
+            get_cmd=":APPLication:DLOGging:LPARameter:TLOGging?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Time-based logging (on/off)"""
+
+        self.dlog_state: Parameter = self.add_parameter(
+            "dlog_state",
+            set_cmd=":APPLication:DLOGging:STATe {}",
+            get_cmd=":APPLication:DLOGging:STATe?",
+            val_mapping={
+                "STOP": 0,
+                "START": 1,
+            },
+        )
+        """Data-logging run state (start/stop)"""
+
+        # CALCulate Sub System Commands — Line markers
+
+        self.line_marker_srange: Parameter = self.add_parameter(
+            "line_marker_srange",
+            set_cmd=":CALCulate:LMARker:SRANge {}",
+            get_cmd=":CALCulate:LMARker:SRANge?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Limit the analysis range to line markers L1–L2 (on/off)"""
+
+        # CALCulate Sub System Commands — Manual markers
+
+        self.marker_auto: Parameter = self.add_parameter(
+            "marker_auto",
+            set_cmd=":CALCulate:MARKer:AUTO {}",
+            get_cmd=":CALCulate:MARKer:AUTO?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Automatic marker placement (on/off)"""
+
+        self.marker_function_format: Parameter = self.add_parameter(
+            "marker_function_format",
+            set_cmd=":CALCulate:MARKer:FUNCtion:FORMat {}",
+            get_cmd=":CALCulate:MARKer:FUNCtion:FORMat?",
+            val_mapping={
+                "OFFSET": 0,
+                "SPACING": 1,
+            },
+        )
+        """Marker readout format (offset or spacing)"""
+
+        self.marker_function_update: Parameter = self.add_parameter(
+            "marker_function_update",
+            set_cmd=":CALCulate:MARKer:FUNCtion:UPDate {}",
+            get_cmd=":CALCulate:MARKer:FUNCtion:UPDate?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Continuous marker-function value update (on/off)"""
+
+        self.marker_maximum_scenter_auto: Parameter = self.add_parameter(
+            "marker_maximum_scenter_auto",
+            set_cmd=":CALCulate:MARKer:MAXimum:SCENter:AUTO {}",
+            get_cmd=":CALCulate:MARKer:MAXimum:SCENter:AUTO?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Automatic 'peak to center' after each sweep (on/off)"""
+
+        self.marker_maximum_srlevel_auto: Parameter = self.add_parameter(
+            "marker_maximum_srlevel_auto",
+            set_cmd=":CALCulate:MARKer:MAXimum:SRLevel:AUTO {}",
+            get_cmd=":CALCulate:MARKer:MAXimum:SRLevel:AUTO?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Automatic 'peak to reference level' after each sweep (on/off)"""
+
+        self.marker_msearch: Parameter = self.add_parameter(
+            "marker_msearch",
+            set_cmd=":CALCulate:MARKer:MSEarch {}",
+            get_cmd=":CALCulate:MARKer:MSEarch?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Multi-peak/bottom marker search mode (on/off)"""
+
+        self.marker_msearch_sort: Parameter = self.add_parameter(
+            "marker_msearch_sort",
+            set_cmd=":CALCulate:MARKer:MSEarch:SORT {}",
+            get_cmd=":CALCulate:MARKer:MSEarch:SORT?",
+            val_mapping={
+                "WAVELENGTH": 0,
+                "LEVEL": 1,
+            },
+        )
+        """Sort order for multi-marker search (by wavelength or level)"""
+
+        self.marker_msearch_threshold: Parameter = self.add_parameter(
+            "marker_msearch_threshold",
+            set_cmd=":CALCulate:MARKer:MSEarch:THResh {}",
+            get_cmd=":CALCulate:MARKer:MSEarch:THResh?",
+            get_parser=float,
+            unit="dB",
+        )
+        """Threshold for multi-marker search (dB)"""
+
+        self.marker_unit: Parameter = self.add_parameter(
+            "marker_unit",
+            set_cmd=":CALCulate:MARKer:UNIT {}",
+            get_cmd=":CALCulate:MARKer:UNIT?",
+            val_mapping=self._x_unit_val_mapping(),
+        )
+        """Marker X-axis unit (wavelength or frequency; wavenumber on AQ6375/AQ6375B)"""
+
+        # CALibration Sub System Commands
+
+        self.calibration_bandwidth_wavelength: Parameter = self.add_parameter(
+            "calibration_bandwidth_wavelength",
+            get_cmd=":CALibration:BANDwidth:WAVelength?",
+            get_parser=float,
+            unit="m",
+        )
+        """Wavelength at which the resolution-bandwidth calibration was performed (m)"""
+
+        self.calibration_wavelength_external_source: Parameter = self.add_parameter(
+            "calibration_wavelength_external_source",
+            set_cmd=":CALibration:WAVelength:EXTernal:SOURce {}",
+            get_cmd=":CALibration:WAVelength:EXTernal:SOURce?",
+            val_mapping={
+                "LASER": 0,
+                "GASCELL": 1,
+                "EMISSION": 2,
+            },
+        )
+        """External wavelength-calibration reference source (laser, gas cell or emission line)"""
+
+        self.calibration_wavelength_external_wavelength: Parameter = self.add_parameter(
+            "calibration_wavelength_external_wavelength",
+            set_cmd=":CALibration:WAVelength:EXTernal:WAVelength {}M",
+            get_cmd=":CALibration:WAVelength:EXTernal:WAVelength?",
+            get_parser=float,
+            unit="m",
+        )
+        """Reference wavelength used for external wavelength calibration (m)"""
+
+        self.calibration_zero_auto: Parameter = self.add_parameter(
+            "calibration_zero_auto",
+            set_cmd=":CALibration:ZERO:AUTO {}",
+            get_cmd=":CALibration:ZERO:AUTO?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Enable or disable automatic zeroing of the monitor (on/off). See also `zero_once()`"""
+
+        self.calibration_zero_interval: Parameter = self.add_parameter(
+            "calibration_zero_interval",
+            set_cmd=":CALibration:ZERO:INTerval {}",
+            get_cmd=":CALibration:ZERO:INTerval?",
+            vals=Ints(),
+            get_parser=int,
+        )
+        """Interval between automatic zeroing operations"""
+
+        self.calibration_zero_status: Parameter = self.add_parameter(
+            "calibration_zero_status",
+            get_cmd=":CALibration:ZERO:STATus?",
+            get_parser=int,
+        )
+        """Status of the most recent zeroing operation"""
+
+        # DISPlay Sub System Commands
 
         self.display_color: Parameter = self.add_parameter(
             "display_color",
@@ -476,7 +788,6 @@ class YokogawaAQ637x(VisaInstrument):
             set_cmd=':DISPlay:TEXT:DATA "{}"',
             get_cmd=":DISPlay:TEXT:DATA?",
             vals=Strings(max_length=56),
-            get_parser=str,
         )
         """Display text label (max 56 characters)"""
 
@@ -948,99 +1259,259 @@ class YokogawaAQ637x(VisaInstrument):
         )
         """Measurement stop wavelength (m)"""
 
-        # CALCulate Sub System Commands — Manual markers
+        # STATus Sub System Commands
 
-        self.marker_auto: Parameter = self.add_parameter(
-            "marker_auto",
-            set_cmd=":CALCulate:MARKer:AUTO {}",
-            get_cmd=":CALCulate:MARKer:AUTO?",
+        self.status_operation_condition: Parameter = self.add_parameter(
+            "status_operation_condition",
+            get_cmd=":STATus:OPERation:CONDition?",
+            get_parser=int,
+        )
+        """Operation status condition register"""
+
+        self.status_operation_enable: Parameter = self.add_parameter(
+            "status_operation_enable",
+            set_cmd=":STATus:OPERation:ENABle {}",
+            get_cmd=":STATus:OPERation:ENABle?",
+            vals=Ints(0, 65535),
+            get_parser=int,
+        )
+        """Operation status enable register"""
+
+        self.status_operation_event: Parameter = self.add_parameter(
+            "status_operation_event",
+            get_cmd=":STATus:OPERation:EVENt?",
+            get_parser=int,
+        )
+        """Operation status event register (read and clear)"""
+
+        self.status_questionable_condition: Parameter = self.add_parameter(
+            "status_questionable_condition",
+            get_cmd=":STATus:QUEStionable:CONDition?",
+            get_parser=int,
+        )
+        """Questionable status condition register"""
+
+        self.status_questionable_enable: Parameter = self.add_parameter(
+            "status_questionable_enable",
+            set_cmd=":STATus:QUEStionable:ENABle {}",
+            get_cmd=":STATus:QUEStionable:ENABle?",
+            vals=Ints(0, 65535),
+            get_parser=int,
+        )
+        """Questionable status enable register"""
+
+        self.status_questionable_event: Parameter = self.add_parameter(
+            "status_questionable_event",
+            get_cmd=":STATus:QUEStionable:EVENt?",
+            get_parser=int,
+        )
+        """Questionable status event register (read and clear)"""
+
+        # SYSTem Sub System Commands
+
+        self.system_buzzer_click: Parameter = self.add_parameter(
+            "system_buzzer_click",
+            set_cmd=":SYSTem:BUZZer:CLIC {}",
+            get_cmd=":SYSTem:BUZZer:CLIC?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Automatic marker placement (on/off)"""
+        """Key-click buzzer (on/off)"""
 
-        self.marker_function_format: Parameter = self.add_parameter(
-            "marker_function_format",
-            set_cmd=":CALCulate:MARKer:FUNCtion:FORMat {}",
-            get_cmd=":CALCulate:MARKer:FUNCtion:FORMat?",
+        self.system_buzzer_warning: Parameter = self.add_parameter(
+            "system_buzzer_warning",
+            set_cmd=":SYSTem:BUZZer:WARNing {}",
+            get_cmd=":SYSTem:BUZZer:WARNing?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Warning buzzer (on/off)"""
+
+        self.system_communicate_gpib2_address: Parameter = self.add_parameter(
+            "system_communicate_gpib2_address",
+            set_cmd=":SYSTem:COMMunicate:GP-IB2:ADDRess {}",
+            get_cmd=":SYSTem:COMMunicate:GP-IB2:ADDRess?",
+            vals=Ints(0, 30),
+            get_parser=int,
+        )
+        """GP-IB2 (device) address"""
+
+        self.system_communicate_gpib2_scontroller: Parameter = self.add_parameter(
+            "system_communicate_gpib2_scontroller",
+            set_cmd=":SYSTem:COMMunicate:GP-IB2:SCONtroller {}",
+            get_cmd=":SYSTem:COMMunicate:GP-IB2:SCONtroller?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """GP-IB2 system-controller mode (on/off)"""
+
+        self.system_communicate_gpib2_tls_address: Parameter = self.add_parameter(
+            "system_communicate_gpib2_tls_address",
+            set_cmd=":SYSTem:COMMunicate:GP-IB2:TLS:ADDRess {}",
+            get_cmd=":SYSTem:COMMunicate:GP-IB2:TLS:ADDRess?",
+            vals=Ints(0, 30),
+            get_parser=int,
+        )
+        """GP-IB2 address of the tunable laser source used for synchronized sweeps"""
+
+        self.system_communicate_lockout: Parameter = self.add_parameter(
+            "system_communicate_lockout",
+            set_cmd=":SYSTem:COMMunicate:LOCKout {}",
+            get_cmd=":SYSTem:COMMunicate:LOCKout?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Remote lockout of the front panel (on/off)"""
+
+        self.system_communicate_rmonitor: Parameter = self.add_parameter(
+            "system_communicate_rmonitor",
+            set_cmd=":SYSTem:COMMunicate:RMONitor {}",
+            get_cmd=":SYSTem:COMMunicate:RMONitor?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Remote-monitor (network) mode (on/off)"""
+
+        self.system_date: Parameter = self.add_parameter(
+            "system_date",
+            set_cmd=":SYSTem:DATE {}",
+            get_cmd=":SYSTem:DATE?",
+        )
+        """System date as ``yyyy,mm,dd``"""
+
+        self.system_display_transparent: Parameter = self.add_parameter(
+            "system_display_transparent",
+            set_cmd=":SYSTem:DISPlay:TRANsparent {}",
+            get_cmd=":SYSTem:DISPlay:TRANsparent?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Transparent dialog windows (on/off)"""
+
+        self.system_display_uncal: Parameter = self.add_parameter(
+            "system_display_uncal",
+            set_cmd=":SYSTem:DISPlay:UNCal {}",
+            get_cmd=":SYSTem:DISPlay:UNCal?",
+            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        )
+        """Display of the 'UNCAL' warning (on/off)"""
+
+        self.system_error: Parameter = self.add_parameter(
+            "system_error",
+            get_cmd=":SYSTem:ERRor?",
+            snapshot_value=False,
+        )
+        """Oldest entry in the instrument error queue (code and message)"""
+
+        self.system_fspeed: Parameter = self.add_parameter(
+            "system_fspeed",
+            get_cmd=":SYSTem:FSPeed?",
+        )
+        """Sampling/measurement front-end speed grade"""
+
+        self.system_grid: Parameter = self.add_parameter(
+            "system_grid",
+            set_cmd=":SYSTem:GRID {}",
+            get_cmd=":SYSTem:GRID?",
             val_mapping={
-                "OFFSET": 0,
-                "SPACING": 1,
+                "12.5GHZ": 0,
+                "25GHZ": 1,
+                "50GHZ": 2,
+                "100GHZ": 3,
+                "200GHZ": 4,
+                "CUSTOM": 5,
             },
         )
-        """Marker readout format (offset or spacing)"""
+        """WDM ITU grid spacing"""
 
-        self.marker_function_update: Parameter = self.add_parameter(
-            "marker_function_update",
-            set_cmd=":CALCulate:MARKer:FUNCtion:UPDate {}",
-            get_cmd=":CALCulate:MARKer:FUNCtion:UPDate?",
+        self.system_grid_custom_spacing: Parameter = self.add_parameter(
+            "system_grid_custom_spacing",
+            set_cmd=":SYSTem:GRID:CUSTom:SPACing {}GHZ",
+            get_cmd=":SYSTem:GRID:CUSTom:SPACing?",
+            get_parser=float,
+            unit="GHz",
+        )
+        """Custom WDM grid spacing (GHz)"""
+
+        self.system_grid_custom_start: Parameter = self.add_parameter(
+            "system_grid_custom_start",
+            set_cmd=":SYSTem:GRID:CUSTom:STARt {}M",
+            get_cmd=":SYSTem:GRID:CUSTom:STARt?",
+            get_parser=float,
+            unit="m",
+        )
+        """Custom WDM grid start wavelength (m)"""
+
+        self.system_grid_custom_stop: Parameter = self.add_parameter(
+            "system_grid_custom_stop",
+            set_cmd=":SYSTem:GRID:CUSTom:STOP {}M",
+            get_cmd=":SYSTem:GRID:CUSTom:STOP?",
+            get_parser=float,
+            unit="m",
+        )
+        """Custom WDM grid stop wavelength (m)"""
+
+        self.system_grid_reference: Parameter = self.add_parameter(
+            "system_grid_reference",
+            set_cmd=":SYSTem:GRID:REFerence {}M",
+            get_cmd=":SYSTem:GRID:REFerence?",
+            get_parser=float,
+            unit="m",
+        )
+        """WDM grid reference wavelength (m)"""
+
+        self.system_time: Parameter = self.add_parameter(
+            "system_time",
+            set_cmd=":SYSTem:TIME {}",
+            get_cmd=":SYSTem:TIME?",
+        )
+        """System time as ``hh,mm,ss``"""
+
+        self.system_version: Parameter = self.add_parameter(
+            "system_version",
+            get_cmd=":SYSTem:VERSion?",
+        )
+        """Instrument firmware version"""
+
+        # TRACe Sub System Commands — Template / GO-NOGO
+
+        self.template_gonogo: Parameter = self.add_parameter(
+            "template_gonogo",
+            set_cmd=":TRACe:TEMPlate:GONogo {}",
+            get_cmd=":TRACe:TEMPlate:GONogo?",
             val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
         )
-        """Continuous marker-function value update (on/off)"""
+        """Template GO/NO-GO judgement (on/off)"""
 
-        self.marker_maximum_scenter_auto: Parameter = self.add_parameter(
-            "marker_maximum_scenter_auto",
-            set_cmd=":CALCulate:MARKer:MAXimum:SCENter:AUTO {}",
-            get_cmd=":CALCulate:MARKer:MAXimum:SCENter:AUTO?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Automatic 'peak to center' after each sweep (on/off)"""
-
-        self.marker_maximum_srlevel_auto: Parameter = self.add_parameter(
-            "marker_maximum_srlevel_auto",
-            set_cmd=":CALCulate:MARKer:MAXimum:SRLevel:AUTO {}",
-            get_cmd=":CALCulate:MARKer:MAXimum:SRLevel:AUTO?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Automatic 'peak to reference level' after each sweep (on/off)"""
-
-        self.marker_msearch: Parameter = self.add_parameter(
-            "marker_msearch",
-            set_cmd=":CALCulate:MARKer:MSEarch {}",
-            get_cmd=":CALCulate:MARKer:MSEarch?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Multi-peak/bottom marker search mode (on/off)"""
-
-        self.marker_msearch_sort: Parameter = self.add_parameter(
-            "marker_msearch_sort",
-            set_cmd=":CALCulate:MARKer:MSEarch:SORT {}",
-            get_cmd=":CALCulate:MARKer:MSEarch:SORT?",
-            val_mapping={
-                "WAVELENGTH": 0,
-                "LEVEL": 1,
-            },
-        )
-        """Sort order for multi-marker search (by wavelength or level)"""
-
-        self.marker_msearch_threshold: Parameter = self.add_parameter(
-            "marker_msearch_threshold",
-            set_cmd=":CALCulate:MARKer:MSEarch:THResh {}",
-            get_cmd=":CALCulate:MARKer:MSEarch:THResh?",
+        self.template_level_shift: Parameter = self.add_parameter(
+            "template_level_shift",
+            set_cmd=":TRACe:TEMPlate:LEVel:SHIFt {}",
+            get_cmd=":TRACe:TEMPlate:LEVel:SHIFt?",
             get_parser=float,
             unit="dB",
         )
-        """Threshold for multi-marker search (dB)"""
+        """Template level shift (dB)"""
 
-        marker_unit_map = {"WAVELENGTH": 0, "FREQUENCY": 1}
-        if self.model in ("AQ6375", "AQ6375B"):
-            marker_unit_map["WNUMBER"] = 2
-        self.marker_unit: Parameter = self.add_parameter(
-            "marker_unit",
-            set_cmd=":CALCulate:MARKer:UNIT {}",
-            get_cmd=":CALCulate:MARKer:UNIT?",
-            val_mapping=marker_unit_map,
+        self.template_result: Parameter = self.add_parameter(
+            "template_result",
+            get_cmd=":TRACe:TEMPlate:RESult?",
         )
-        """Marker X-axis unit (wavelength or frequency; wavenumber on AQ6375/AQ6375B)"""
+        """Template GO/NO-GO judgement result"""
 
-        # CALCulate Sub System Commands — Line markers
-
-        self.line_marker_srange: Parameter = self.add_parameter(
-            "line_marker_srange",
-            set_cmd=":CALCulate:LMARker:SRANge {}",
-            get_cmd=":CALCulate:LMARker:SRANge?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
+        self.template_ttype: Parameter = self.add_parameter(
+            "template_ttype",
+            set_cmd=":TRACe:TEMPlate:TTYPe {}",
+            get_cmd=":TRACe:TEMPlate:TTYPe?",
+            val_mapping={
+                "UPPER": 0,
+                "LOWER": 1,
+                "UPPER_AND_LOWER": 2,
+            },
         )
-        """Limit the analysis range to line markers L1–L2 (on/off)"""
+        """Template limit type (upper, lower, or both)"""
+
+        self.template_wavelength_shift: Parameter = self.add_parameter(
+            "template_wavelength_shift",
+            set_cmd=":TRACe:TEMPlate:WAVelength:SHIFt {}M",
+            get_cmd=":TRACe:TEMPlate:WAVelength:SHIFt?",
+            get_parser=float,
+            unit="m",
+        )
+        """Template wavelength shift (m)"""
 
         # TRIGger Sub System Commands
 
@@ -1128,274 +1599,6 @@ class YokogawaAQ637x(VisaInstrument):
         )
         """Peak-hold time in peak-hold gate mode (s)"""
 
-        # CALibration Sub System Commands
-
-        self.calibration_bandwidth_wavelength: Parameter = self.add_parameter(
-            "calibration_bandwidth_wavelength",
-            get_cmd=":CALibration:BANDwidth:WAVelength?",
-            get_parser=float,
-            unit="m",
-        )
-        """Wavelength at which the resolution-bandwidth calibration was performed (m)"""
-
-        self.calibration_wavelength_external_source: Parameter = self.add_parameter(
-            "calibration_wavelength_external_source",
-            set_cmd=":CALibration:WAVelength:EXTernal:SOURce {}",
-            get_cmd=":CALibration:WAVelength:EXTernal:SOURce?",
-            val_mapping={
-                "LASER": 0,
-                "GASCELL": 1,
-                "EMISSION": 2,
-            },
-        )
-        """External wavelength-calibration reference source (laser, gas cell or emission line)"""
-
-        self.calibration_wavelength_external_wavelength: Parameter = self.add_parameter(
-            "calibration_wavelength_external_wavelength",
-            set_cmd=":CALibration:WAVelength:EXTernal:WAVelength {}M",
-            get_cmd=":CALibration:WAVelength:EXTernal:WAVelength?",
-            get_parser=float,
-            unit="m",
-        )
-        """Reference wavelength used for external wavelength calibration (m)"""
-
-        self.calibration_zero_auto: Parameter = self.add_parameter(
-            "calibration_zero_auto",
-            set_cmd=":CALibration:ZERO:AUTO {}",
-            get_cmd=":CALibration:ZERO:AUTO?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Enable or disable automatic zeroing of the monitor (on/off). See also `zero_once()`"""
-
-        self.calibration_zero_interval: Parameter = self.add_parameter(
-            "calibration_zero_interval",
-            set_cmd=":CALibration:ZERO:INTerval {}",
-            get_cmd=":CALibration:ZERO:INTerval?",
-            vals=Ints(),
-            get_parser=int,
-        )
-        """Interval between automatic zeroing operations"""
-
-        self.calibration_zero_status: Parameter = self.add_parameter(
-            "calibration_zero_status",
-            get_cmd=":CALibration:ZERO:STATus?",
-            get_parser=int,
-        )
-        """Status of the most recent zeroing operation"""
-
-        # SYSTem Sub System Commands
-
-        self.system_error: Parameter = self.add_parameter(
-            "system_error",
-            get_cmd=":SYSTem:ERRor?",
-            get_parser=str,
-            snapshot_value=False,
-        )
-        """Oldest entry in the instrument error queue (code and message)"""
-
-        self.system_version: Parameter = self.add_parameter(
-            "system_version",
-            get_cmd=":SYSTem:VERSion?",
-            get_parser=str,
-        )
-        """Instrument firmware version"""
-
-        self.system_fspeed: Parameter = self.add_parameter(
-            "system_fspeed",
-            get_cmd=":SYSTem:FSPeed?",
-            get_parser=str,
-        )
-        """Sampling/measurement front-end speed grade"""
-
-        self.system_buzzer_click: Parameter = self.add_parameter(
-            "system_buzzer_click",
-            set_cmd=":SYSTem:BUZZer:CLIC {}",
-            get_cmd=":SYSTem:BUZZer:CLIC?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Key-click buzzer (on/off)"""
-
-        self.system_buzzer_warning: Parameter = self.add_parameter(
-            "system_buzzer_warning",
-            set_cmd=":SYSTem:BUZZer:WARNing {}",
-            get_cmd=":SYSTem:BUZZer:WARNing?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Warning buzzer (on/off)"""
-
-        self.system_communicate_gpib2_address: Parameter = self.add_parameter(
-            "system_communicate_gpib2_address",
-            set_cmd=":SYSTem:COMMunicate:GP-IB2:ADDRess {}",
-            get_cmd=":SYSTem:COMMunicate:GP-IB2:ADDRess?",
-            vals=Ints(0, 30),
-            get_parser=int,
-        )
-        """GP-IB2 (device) address"""
-
-        self.system_communicate_gpib2_scontroller: Parameter = self.add_parameter(
-            "system_communicate_gpib2_scontroller",
-            set_cmd=":SYSTem:COMMunicate:GP-IB2:SCONtroller {}",
-            get_cmd=":SYSTem:COMMunicate:GP-IB2:SCONtroller?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """GP-IB2 system-controller mode (on/off)"""
-
-        self.system_communicate_gpib2_tls_address: Parameter = self.add_parameter(
-            "system_communicate_gpib2_tls_address",
-            set_cmd=":SYSTem:COMMunicate:GP-IB2:TLS:ADDRess {}",
-            get_cmd=":SYSTem:COMMunicate:GP-IB2:TLS:ADDRess?",
-            vals=Ints(0, 30),
-            get_parser=int,
-        )
-        """GP-IB2 address of the tunable laser source used for synchronized sweeps"""
-
-        self.system_communicate_lockout: Parameter = self.add_parameter(
-            "system_communicate_lockout",
-            set_cmd=":SYSTem:COMMunicate:LOCKout {}",
-            get_cmd=":SYSTem:COMMunicate:LOCKout?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Remote lockout of the front panel (on/off)"""
-
-        self.system_communicate_rmonitor: Parameter = self.add_parameter(
-            "system_communicate_rmonitor",
-            set_cmd=":SYSTem:COMMunicate:RMONitor {}",
-            get_cmd=":SYSTem:COMMunicate:RMONitor?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Remote-monitor (network) mode (on/off)"""
-
-        self.system_date: Parameter = self.add_parameter(
-            "system_date",
-            set_cmd=":SYSTem:DATE {}",
-            get_cmd=":SYSTem:DATE?",
-            get_parser=str,
-        )
-        """System date as ``yyyy,mm,dd``"""
-
-        self.system_time: Parameter = self.add_parameter(
-            "system_time",
-            set_cmd=":SYSTem:TIME {}",
-            get_cmd=":SYSTem:TIME?",
-            get_parser=str,
-        )
-        """System time as ``hh,mm,ss``"""
-
-        self.system_display_transparent: Parameter = self.add_parameter(
-            "system_display_transparent",
-            set_cmd=":SYSTem:DISPlay:TRANsparent {}",
-            get_cmd=":SYSTem:DISPlay:TRANsparent?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Transparent dialog windows (on/off)"""
-
-        self.system_display_uncal: Parameter = self.add_parameter(
-            "system_display_uncal",
-            set_cmd=":SYSTem:DISPlay:UNCal {}",
-            get_cmd=":SYSTem:DISPlay:UNCal?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Display of the 'UNCAL' warning (on/off)"""
-
-        self.system_grid: Parameter = self.add_parameter(
-            "system_grid",
-            set_cmd=":SYSTem:GRID {}",
-            get_cmd=":SYSTem:GRID?",
-            val_mapping={
-                "12.5GHZ": 0,
-                "25GHZ": 1,
-                "50GHZ": 2,
-                "100GHZ": 3,
-                "200GHZ": 4,
-                "CUSTOM": 5,
-            },
-        )
-        """WDM ITU grid spacing"""
-
-        self.system_grid_custom_spacing: Parameter = self.add_parameter(
-            "system_grid_custom_spacing",
-            set_cmd=":SYSTem:GRID:CUSTom:SPACing {}GHZ",
-            get_cmd=":SYSTem:GRID:CUSTom:SPACing?",
-            get_parser=float,
-            unit="GHz",
-        )
-        """Custom WDM grid spacing (GHz)"""
-
-        self.system_grid_custom_start: Parameter = self.add_parameter(
-            "system_grid_custom_start",
-            set_cmd=":SYSTem:GRID:CUSTom:STARt {}M",
-            get_cmd=":SYSTem:GRID:CUSTom:STARt?",
-            get_parser=float,
-            unit="m",
-        )
-        """Custom WDM grid start wavelength (m)"""
-
-        self.system_grid_custom_stop: Parameter = self.add_parameter(
-            "system_grid_custom_stop",
-            set_cmd=":SYSTem:GRID:CUSTom:STOP {}M",
-            get_cmd=":SYSTem:GRID:CUSTom:STOP?",
-            get_parser=float,
-            unit="m",
-        )
-        """Custom WDM grid stop wavelength (m)"""
-
-        self.system_grid_reference: Parameter = self.add_parameter(
-            "system_grid_reference",
-            set_cmd=":SYSTem:GRID:REFerence {}M",
-            get_cmd=":SYSTem:GRID:REFerence?",
-            get_parser=float,
-            unit="m",
-        )
-        """WDM grid reference wavelength (m)"""
-
-        # STATus Sub System Commands
-
-        self.status_operation_condition: Parameter = self.add_parameter(
-            "status_operation_condition",
-            get_cmd=":STATus:OPERation:CONDition?",
-            get_parser=int,
-        )
-        """Operation status condition register"""
-
-        self.status_operation_enable: Parameter = self.add_parameter(
-            "status_operation_enable",
-            set_cmd=":STATus:OPERation:ENABle {}",
-            get_cmd=":STATus:OPERation:ENABle?",
-            vals=Ints(0, 65535),
-            get_parser=int,
-        )
-        """Operation status enable register"""
-
-        self.status_operation_event: Parameter = self.add_parameter(
-            "status_operation_event",
-            get_cmd=":STATus:OPERation:EVENt?",
-            get_parser=int,
-        )
-        """Operation status event register (read and clear)"""
-
-        self.status_questionable_condition: Parameter = self.add_parameter(
-            "status_questionable_condition",
-            get_cmd=":STATus:QUEStionable:CONDition?",
-            get_parser=int,
-        )
-        """Questionable status condition register"""
-
-        self.status_questionable_enable: Parameter = self.add_parameter(
-            "status_questionable_enable",
-            set_cmd=":STATus:QUEStionable:ENABle {}",
-            get_cmd=":STATus:QUEStionable:ENABle?",
-            vals=Ints(0, 65535),
-            get_parser=int,
-        )
-        """Questionable status enable register"""
-
-        self.status_questionable_event: Parameter = self.add_parameter(
-            "status_questionable_event",
-            get_cmd=":STATus:QUEStionable:EVENt?",
-            get_parser=int,
-        )
-        """Questionable status event register (read and clear)"""
-
         # UNIT Sub System Commands
 
         self.unit_power_digit: Parameter = self.add_parameter(
@@ -1407,176 +1610,16 @@ class YokogawaAQ637x(VisaInstrument):
         )
         """Number of significant digits for power readouts (1–3)"""
 
-        unit_x_map = {"WAVELENGTH": 0, "FREQUENCY": 1}
-        if self.model in ("AQ6375", "AQ6375B"):
-            unit_x_map["WNUMBER"] = 2
         self.unit_x: Parameter = self.add_parameter(
             "unit_x",
             set_cmd=":UNIT:X {}",
             get_cmd=":UNIT:X?",
-            val_mapping=unit_x_map,
+            val_mapping=self._x_unit_val_mapping(),
         )
         """X-axis unit (wavelength or frequency; wavenumber on AQ6375/AQ6375B)"""
 
-        # TRACe Sub System Commands — Template / GO-NOGO
 
-        self.template_gonogo: Parameter = self.add_parameter(
-            "template_gonogo",
-            set_cmd=":TRACe:TEMPlate:GONogo {}",
-            get_cmd=":TRACe:TEMPlate:GONogo?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Template GO/NO-GO judgement (on/off)"""
-
-        self.template_level_shift: Parameter = self.add_parameter(
-            "template_level_shift",
-            set_cmd=":TRACe:TEMPlate:LEVel:SHIFt {}",
-            get_cmd=":TRACe:TEMPlate:LEVel:SHIFt?",
-            get_parser=float,
-            unit="dB",
-        )
-        """Template level shift (dB)"""
-
-        self.template_result: Parameter = self.add_parameter(
-            "template_result",
-            get_cmd=":TRACe:TEMPlate:RESult?",
-            get_parser=str,
-        )
-        """Template GO/NO-GO judgement result"""
-
-        self.template_ttype: Parameter = self.add_parameter(
-            "template_ttype",
-            set_cmd=":TRACe:TEMPlate:TTYPe {}",
-            get_cmd=":TRACe:TEMPlate:TTYPe?",
-            val_mapping={
-                "UPPER": 0,
-                "LOWER": 1,
-                "UPPER_AND_LOWER": 2,
-            },
-        )
-        """Template limit type (upper, lower, or both)"""
-
-        self.template_wavelength_shift: Parameter = self.add_parameter(
-            "template_wavelength_shift",
-            set_cmd=":TRACe:TEMPlate:WAVelength:SHIFt {}M",
-            get_cmd=":TRACe:TEMPlate:WAVelength:SHIFt?",
-            get_parser=float,
-            unit="m",
-        )
-        """Template wavelength shift (m)"""
-
-        # APPLication:DLOGging Sub System Commands
-
-        self.dlog_elapsed_time: Parameter = self.add_parameter(
-            "dlog_elapsed_time",
-            get_cmd=":APPLication:DLOGging:ETIMe?",
-            get_parser=int,
-            unit="s",
-        )
-        """Elapsed data-logging time (s)"""
-
-        self.dlog_interval: Parameter = self.add_parameter(
-            "dlog_interval",
-            set_cmd=":APPLication:DLOGging:LPARameter:INTerval {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:INTerval?",
-            vals=Ints(),
-            get_parser=int,
-        )
-        """Data-logging sampling interval"""
-
-        self.dlog_item: Parameter = self.add_parameter(
-            "dlog_item",
-            set_cmd=":APPLication:DLOGging:LPARameter:ITEM {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:ITEM?",
-            vals=Ints(0, 3),
-            get_parser=int,
-        )
-        """Data-logging item selection"""
-
-        self.dlog_lmode: Parameter = self.add_parameter(
-            "dlog_lmode",
-            set_cmd=":APPLication:DLOGging:LPARameter:LMODe {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:LMODe?",
-            vals=Ints(1, 2),
-            get_parser=int,
-        )
-        """Data-logging mode"""
-
-        self.dlog_memory: Parameter = self.add_parameter(
-            "dlog_memory",
-            set_cmd=":APPLication:DLOGging:LPARameter:MEMory {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:MEMory?",
-            val_mapping={
-                "INTERNAL": "INT",
-                "EXTERNAL": "EXT",
-            },
-        )
-        """Data-logging storage location (internal or external)"""
-
-        self.dlog_mthresh: Parameter = self.add_parameter(
-            "dlog_mthresh",
-            set_cmd=":APPLication:DLOGging:LPARameter:MTHResh {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:MTHResh?",
-            get_parser=float,
-        )
-        """Data-logging measurement threshold"""
-
-        self.dlog_pdetect_athresh: Parameter = self.add_parameter(
-            "dlog_pdetect_athresh",
-            set_cmd=":APPLication:DLOGging:LPARameter:PDETect:ATHResh {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:PDETect:ATHResh?",
-            get_parser=float,
-        )
-        """Peak-detection absolute threshold"""
-
-        self.dlog_pdetect_rthresh: Parameter = self.add_parameter(
-            "dlog_pdetect_rthresh",
-            set_cmd=":APPLication:DLOGging:LPARameter:PDETect:RTHResh {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:PDETect:RTHResh?",
-            get_parser=float,
-        )
-        """Peak-detection relative threshold"""
-
-        self.dlog_pdetect_ttype: Parameter = self.add_parameter(
-            "dlog_pdetect_ttype",
-            set_cmd=":APPLication:DLOGging:LPARameter:PDETect:TTYPe {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:PDETect:TTYPe?",
-            val_mapping={
-                "ABSOLUTE": "ABS",
-                "RELATIVE": "REL",
-            },
-        )
-        """Peak-detection threshold type (absolute or relative)"""
-
-        self.dlog_tduration: Parameter = self.add_parameter(
-            "dlog_tduration",
-            set_cmd=":APPLication:DLOGging:LPARameter:TDURation {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:TDURation?",
-            vals=Ints(),
-            get_parser=int,
-        )
-        """Data-logging total duration"""
-
-        self.dlog_tlogging: Parameter = self.add_parameter(
-            "dlog_tlogging",
-            set_cmd=":APPLication:DLOGging:LPARameter:TLOGging {}",
-            get_cmd=":APPLication:DLOGging:LPARameter:TLOGging?",
-            val_mapping=create_on_off_val_mapping(on_val=1, off_val=0),
-        )
-        """Time-based logging (on/off)"""
-
-        self.dlog_state: Parameter = self.add_parameter(
-            "dlog_state",
-            set_cmd=":APPLication:DLOGging:STATe {}",
-            get_cmd=":APPLication:DLOGging:STATe?",
-            val_mapping={
-                "STOP": 0,
-                "START": 1,
-            },
-        )
-        """Data-logging run state (start/stop)"""
-
-    # Common Commands
+    # Internal helpers
 
     def _get_self_test(self) -> int:
         """Query ``*TST?`` with a temporarily extended VISA timeout.
@@ -1591,6 +1634,15 @@ class YokogawaAQ637x(VisaInstrument):
             return int(self.ask("*TST?"))
         finally:
             self.visa_handle.timeout = old_timeout
+
+    def _x_unit_val_mapping(self) -> "dict[str, int]":
+        """val_mapping for the X-axis unit; wavenumber only on AQ6375/AQ6375B."""
+        mapping = {"WAVELENGTH": 0, "FREQUENCY": 1}
+        if self.model in ("AQ6375", "AQ6375B"):
+            mapping["WNUMBER"] = 2
+        return mapping
+
+    # Common Commands (IEEE 488.2)
 
     def clear_status(self) -> None:
         """Clear all event status registers and queues except the output queue"""
@@ -1608,49 +1660,111 @@ class YokogawaAQ637x(VisaInstrument):
         """Wait until all previously issued commands have completed"""
         self.write("*WAI")
 
-    ## Instrument specific commands
-    # Replicating button commands
-
-    def immediate(self):
-        """Makes a sweep"""
-        self.write(":INITIATE")
+    # ABORt Sub System Command
 
     def stop(self) -> None:
         """Stops operations such as measurements and calibration"""
         self.write(":ABORt")
 
-    def auto(self):
-        """Equivalent to the OSA front-panel `AUTO` button: set sweep mode to AUTO and trigger an immediate sweep."""
-        self.sweep_mode("AUTO")
-        self.immediate()
+    # CALCulate Sub System Commands — Line marker actions
 
-    def repeat(self):
-        """Equivalent to the OSA front-panel `REPEAT` button: set sweep mode to REPEAT and trigger continuous sweeps."""
-        self.sweep_mode("REPEAT")
-        self.immediate()
+    def line_marker_all_off(self) -> None:
+        """Turn off all line markers (`:CALCulate:LMARker:AOFF`)."""
+        self.write(":CALCulate:LMARker:AOFF")
 
-    def single(self):
-        """Equivalent to the OSA front-panel `SINGLE` button: set sweep mode to SINGLE and perform one sweep."""
-        self.sweep_mode("SINGLE")
-        self.immediate()
+    def line_marker_sspan(self) -> None:
+        """Set the sweep span to the L1–L2 line-marker spacing."""
+        self.write(":CALCulate:LMARker:SSPan")
 
-    # Display Sub System Commands
+    def line_marker_szspan(self) -> None:
+        """Set the zoom span to the L1–L2 line-marker spacing."""
+        self.write(":CALCulate:LMARker:SZSPan")
 
-    def display_text_clear(self) -> None:
-        """Clear all display text labels"""
-        self.write(":DISPlay:TEXT:CLEar")
+    def line_marker_set_x(self, marker: int, value: float) -> None:
+        """Set wavelength/frequency line marker ``marker`` (1 or 2)."""
+        self.write(f":CALCulate:LMARker:X {marker},{value}")
 
-    def display_trace_x_initialize(self) -> None:
-        """Initialize the display X-axis scale parameters"""
-        self.write(":DISPlay:TRACe:X:SCALe:INITialize")
+    def line_marker_set_y(self, marker: int, value: float) -> None:
+        """Set level line marker ``marker`` (3 or 4)."""
+        self.write(f":CALCulate:LMARker:Y {marker},{value}")
 
-    def display_trace_x_smscale(self) -> None:
-        """Sets parameters of the current display scale to the measurement scale"""
-        self.write(":DISPLAY:TRACE:X:SMSCALE")
+    # CALCulate Sub System Commands — Manual marker actions
 
-    def delete_all_traces(self) -> None:
-        """Delete the data of all traces."""
-        self.write(":TRACe:DELete:ALL")
+    def clear_all_markers(self) -> None:
+        """Turn off all manual markers (`:CALCulate:MARKer:AOFF`)."""
+        self.write(":CALCulate:MARKer:AOFF")
+
+    def marker_maximum(self) -> None:
+        """Move the active marker to the peak level."""
+        self.write(":CALCulate:MARKer:MAXimum")
+
+    def marker_maximum_left(self) -> None:
+        """Move the active marker to the next peak to the left."""
+        self.write(":CALCulate:MARKer:MAXimum:LEFT")
+
+    def marker_maximum_next(self) -> None:
+        """Move the active marker to the next-highest peak."""
+        self.write(":CALCulate:MARKer:MAXimum:NEXT")
+
+    def marker_maximum_right(self) -> None:
+        """Move the active marker to the next peak to the right."""
+        self.write(":CALCulate:MARKer:MAXimum:RIGHt")
+
+    def marker_maximum_scenter(self) -> None:
+        """Set the peak wavelength to the measurement center ('peak to center')."""
+        self.write(":CALCulate:MARKer:MAXimum:SCENter")
+
+    def marker_maximum_srlevel(self) -> None:
+        """Set the peak level to the reference level ('peak to reference level')."""
+        self.write(":CALCulate:MARKer:MAXimum:SRLevel")
+
+    def marker_maximum_szcenter(self) -> None:
+        """Set the peak wavelength to the display center in zoom span."""
+        self.write(":CALCulate:MARKer:MAXimum:SZCenter")
+
+    def marker_minimum(self) -> None:
+        """Move the active marker to the bottom level."""
+        self.write(":CALCulate:MARKer:MINimum")
+
+    def marker_minimum_left(self) -> None:
+        """Move the active marker to the next bottom to the left."""
+        self.write(":CALCulate:MARKer:MINimum:LEFT")
+
+    def marker_minimum_next(self) -> None:
+        """Move the active marker to the next-lowest bottom."""
+        self.write(":CALCulate:MARKer:MINimum:NEXT")
+
+    def marker_minimum_right(self) -> None:
+        """Move the active marker to the next bottom to the right."""
+        self.write(":CALCulate:MARKer:MINimum:RIGHt")
+
+    def marker_scenter(self) -> None:
+        """Set the active marker wavelength to the measurement center."""
+        self.write(":CALCulate:MARKer:SCENter")
+
+    def marker_srlevel(self) -> None:
+        """Set the active marker level to the reference level."""
+        self.write(":CALCulate:MARKer:SRLevel")
+
+    def marker_set_state(self, marker: int, state: bool) -> None:
+        """Enable or disable moving marker ``marker``."""
+        self.write(f":CALCulate:MARKer:STATe {marker},{1 if state else 0}")
+
+    def marker_szcenter(self) -> None:
+        """Set the active marker wavelength to the display center in zoom span."""
+        self.write(":CALCulate:MARKer:SZCenter")
+
+    def marker_set_x(self, marker: int, value: float) -> None:
+        """Set the X position (wavelength/frequency) of marker ``marker``."""
+        self.write(f":CALCulate:MARKer:X {marker},{value}")
+
+    def marker_get_x(self, marker: int) -> float:
+        """Query the X position of marker ``marker``."""
+        return float(self.ask(f":CALCulate:MARKer:X? {marker}"))
+
+    def marker_get_y(self, marker: int) -> float:
+        """Query the Y value (level) of marker ``marker``."""
+        return float(self.ask(f":CALCulate:MARKer:Y? {marker}"))
 
     # CALibration Sub System Commands
 
@@ -1674,18 +1788,6 @@ class YokogawaAQ637x(VisaInstrument):
         """Reset the resolution-bandwidth calibration to its factory state."""
         self.write(":CALibration:BANDwidth:INITialize")
 
-    def calibrate_wavelength_internal(self) -> None:
-        """Execute wavelength calibration using the internal reference."""
-        self.write(":CALibration:WAVelength:INTernal")
-
-    def calibrate_wavelength_external(self) -> None:
-        """Execute wavelength calibration using the external reference source."""
-        self.write(":CALibration:WAVelength:EXTernal")
-
-    def zero_once(self) -> None:
-        """Perform a single monitor-zeroing operation now (`:CALibration:ZERO ONCE`)."""
-        self.write(":CALibration:ZERO ONCE")
-
     def calibration_power_offset_table(self, index: int, offset: float) -> None:
         """Set an entry in the power-offset calibration table.
 
@@ -1695,6 +1797,14 @@ class YokogawaAQ637x(VisaInstrument):
         """
         self.write(f":CALibration:POWer:OFFSet:TABLe {index},{offset}")
 
+    def calibrate_wavelength_external(self) -> None:
+        """Execute wavelength calibration using the external reference source."""
+        self.write(":CALibration:WAVelength:EXTernal")
+
+    def calibrate_wavelength_internal(self) -> None:
+        """Execute wavelength calibration using the internal reference."""
+        self.write(":CALibration:WAVelength:INTernal")
+
     def calibration_wavelength_offset_table(self, index: int, offset: float) -> None:
         """Set an entry in the wavelength-offset calibration table.
 
@@ -1703,6 +1813,49 @@ class YokogawaAQ637x(VisaInstrument):
             offset: Wavelength offset value.
         """
         self.write(f":CALibration:WAVelength:OFFSet:TABLe {index},{offset}")
+
+    def zero_once(self) -> None:
+        """Perform a single monitor-zeroing operation now (`:CALibration:ZERO ONCE`)."""
+        self.write(":CALibration:ZERO ONCE")
+
+    # DISPlay Sub System Commands
+
+    def display_position(self, trace: str, position: str) -> None:
+        """Place ``trace`` in the upper (``UP``) or lower (``LOW``) split window."""
+        self.write(f":DISPlay:POSition {trace},{position}")
+
+    def display_text_clear(self) -> None:
+        """Clear all display text labels"""
+        self.write(":DISPlay:TEXT:CLEar")
+
+    def display_trace_x_initialize(self) -> None:
+        """Initialize the display X-axis scale parameters"""
+        self.write(":DISPlay:TRACe:X:SCALe:INITialize")
+
+    def display_trace_x_smscale(self) -> None:
+        """Sets parameters of the current display scale to the measurement scale"""
+        self.write(":DISPLAY:TRACE:X:SMSCALE")
+
+    # INITiate Sub System Command
+
+    def immediate(self) -> None:
+        """Makes a sweep"""
+        self.write(":INITIATE")
+
+    def auto(self) -> None:
+        """Equivalent to the OSA front-panel `AUTO` button: set sweep mode to AUTO and trigger an immediate sweep."""
+        self.sweep_mode("AUTO")
+        self.immediate()
+
+    def repeat(self) -> None:
+        """Equivalent to the OSA front-panel `REPEAT` button: set sweep mode to REPEAT and trigger continuous sweeps."""
+        self.sweep_mode("REPEAT")
+        self.immediate()
+
+    def single(self) -> None:
+        """Equivalent to the OSA front-panel `SINGLE` button: set sweep mode to SINGLE and perform one sweep."""
+        self.sweep_mode("SINGLE")
+        self.immediate()
 
     # MEMory Sub System Commands
 
@@ -1779,8 +1932,6 @@ class YokogawaAQ637x(VisaInstrument):
         """Rename ``old_name`` to ``new_name`` on the given medium."""
         self.write(f':MMEMory:REName "{new_name}","{old_name}"{self._medium(medium)}')
 
-    # MMEMory load commands
-
     def mmemory_load_all_trace(self, filename: str, medium: "str | None" = None) -> None:
         """Load an all-trace (.CSV/.BIN) file."""
         self.write(f':MMEMory:LOAD:ATRace "{filename}"{self._medium(medium)}')
@@ -1808,8 +1959,6 @@ class YokogawaAQ637x(VisaInstrument):
     def mmemory_load_trace(self, trace: str, filename: str, medium: "str | None" = None) -> None:
         """Load ``filename`` into ``trace`` (TRA–TRG)."""
         self.write(f':MMEMory:LOAD:TRACe {trace},"{filename}"{self._medium(medium)}')
-
-    # MMEMory store commands
 
     def mmemory_store_analysis_result(self, filename: str, medium: "str | None" = None) -> None:
         """Store the analysis-result table to a file."""
@@ -1883,107 +2032,11 @@ class YokogawaAQ637x(VisaInstrument):
             f':MMEMory:STORe:TRACe {trace},{data_format},"{filename}"{self._medium(medium)}'
         )
 
-    # CALCulate Sub System Commands — Manual marker actions
+    # PROGram Sub System Command
 
-    def clear_all_markers(self) -> None:
-        """Turn off all manual markers (`:CALCulate:MARKer:AOFF`)."""
-        self.write(":CALCulate:MARKer:AOFF")
-
-    def marker_maximum(self) -> None:
-        """Move the active marker to the peak level."""
-        self.write(":CALCulate:MARKer:MAXimum")
-
-    def marker_maximum_left(self) -> None:
-        """Move the active marker to the next peak to the left."""
-        self.write(":CALCulate:MARKer:MAXimum:LEFT")
-
-    def marker_maximum_next(self) -> None:
-        """Move the active marker to the next-highest peak."""
-        self.write(":CALCulate:MARKer:MAXimum:NEXT")
-
-    def marker_maximum_right(self) -> None:
-        """Move the active marker to the next peak to the right."""
-        self.write(":CALCulate:MARKer:MAXimum:RIGHt")
-
-    def marker_maximum_scenter(self) -> None:
-        """Set the peak wavelength to the measurement center ('peak to center')."""
-        self.write(":CALCulate:MARKer:MAXimum:SCENter")
-
-    def marker_maximum_srlevel(self) -> None:
-        """Set the peak level to the reference level ('peak to reference level')."""
-        self.write(":CALCulate:MARKer:MAXimum:SRLevel")
-
-    def marker_maximum_szcenter(self) -> None:
-        """Set the peak wavelength to the display center in zoom span."""
-        self.write(":CALCulate:MARKer:MAXimum:SZCenter")
-
-    def marker_minimum(self) -> None:
-        """Move the active marker to the bottom level."""
-        self.write(":CALCulate:MARKer:MINimum")
-
-    def marker_minimum_left(self) -> None:
-        """Move the active marker to the next bottom to the left."""
-        self.write(":CALCulate:MARKer:MINimum:LEFT")
-
-    def marker_minimum_next(self) -> None:
-        """Move the active marker to the next-lowest bottom."""
-        self.write(":CALCulate:MARKer:MINimum:NEXT")
-
-    def marker_minimum_right(self) -> None:
-        """Move the active marker to the next bottom to the right."""
-        self.write(":CALCulate:MARKer:MINimum:RIGHt")
-
-    def marker_scenter(self) -> None:
-        """Set the active marker wavelength to the measurement center."""
-        self.write(":CALCulate:MARKer:SCENter")
-
-    def marker_srlevel(self) -> None:
-        """Set the active marker level to the reference level."""
-        self.write(":CALCulate:MARKer:SRLevel")
-
-    def marker_szcenter(self) -> None:
-        """Set the active marker wavelength to the display center in zoom span."""
-        self.write(":CALCulate:MARKer:SZCenter")
-
-    # CALCulate Sub System Commands — Per-marker set/query (marker number is an argument)
-
-    def marker_set_state(self, marker: int, state: bool) -> None:
-        """Enable or disable moving marker ``marker``."""
-        self.write(f":CALCulate:MARKer:STATe {marker},{1 if state else 0}")
-
-    def marker_set_x(self, marker: int, value: float) -> None:
-        """Set the X position (wavelength/frequency) of marker ``marker``."""
-        self.write(f":CALCulate:MARKer:X {marker},{value}")
-
-    def marker_get_x(self, marker: int) -> float:
-        """Query the X position of marker ``marker``."""
-        return float(self.ask(f":CALCulate:MARKer:X? {marker}"))
-
-    def marker_get_y(self, marker: int) -> float:
-        """Query the Y value (level) of marker ``marker``."""
-        return float(self.ask(f":CALCulate:MARKer:Y? {marker}"))
-
-    # CALCulate Sub System Commands — Line marker actions
-
-    def line_marker_all_off(self) -> None:
-        """Turn off all line markers (`:CALCulate:LMARker:AOFF`)."""
-        self.write(":CALCulate:LMARker:AOFF")
-
-    def line_marker_sspan(self) -> None:
-        """Set the sweep span to the L1–L2 line-marker spacing."""
-        self.write(":CALCulate:LMARker:SSPan")
-
-    def line_marker_szspan(self) -> None:
-        """Set the zoom span to the L1–L2 line-marker spacing."""
-        self.write(":CALCulate:LMARker:SZSPan")
-
-    def line_marker_set_x(self, marker: int, value: float) -> None:
-        """Set wavelength/frequency line marker ``marker`` (1 or 2)."""
-        self.write(f":CALCulate:LMARker:X {marker},{value}")
-
-    def line_marker_set_y(self, marker: int, value: float) -> None:
-        """Set level line marker ``marker`` (3 or 4)."""
-        self.write(f":CALCulate:LMARker:Y {marker},{value}")
+    def program_execute(self, index: int) -> None:
+        """Execute the stored program at ``index``."""
+        self.write(f":PROGram:EXECute {index}")
 
     # STATus Sub System Commands
 
@@ -1992,18 +2045,6 @@ class YokogawaAQ637x(VisaInstrument):
         self.write(":STATus:OPERation:PRESet")
 
     # SYSTem Sub System Commands
-
-    def system_information(self, kind: int = 0) -> str:
-        """Return system information (``kind`` 0 or 1)."""
-        return self.ask(f":SYSTem:INFormation? {kind}")
-
-    def system_preset(self) -> None:
-        """Reset the instrument to its preset (initialized) state."""
-        self.write(":SYSTem:PRESet")
-
-    def system_operator_lock(self, state: bool, password: str) -> None:
-        """Enable/disable the operator lock using ``password``."""
-        self.write(f':SYSTem:OLOCK {1 if state else 0},"{password}"')
 
     def system_grid_custom_clear_all(self) -> None:
         """Clear all custom WDM grid entries."""
@@ -2017,21 +2058,27 @@ class YokogawaAQ637x(VisaInstrument):
         """Insert a wavelength into the custom WDM grid (m)."""
         self.write(f":SYSTem:GRID:CUSTom:INSert {value}M")
 
-    # UNIT / DISPlay / PROGram misc commands
+    def system_information(self, kind: int = 0) -> str:
+        """Return system information (``kind`` 0 or 1)."""
+        return self.ask(f":SYSTem:INFormation? {kind}")
 
-    def display_position(self, trace: str, position: str) -> None:
-        """Place ``trace`` in the upper (``UP``) or lower (``LOW``) split window."""
-        self.write(f":DISPlay:POSition {trace},{position}")
+    def system_operator_lock(self, state: bool, password: str) -> None:
+        """Enable/disable the operator lock using ``password``."""
+        self.write(f':SYSTem:OLOCK {1 if state else 0},"{password}"')
 
-    def program_execute(self, index: int) -> None:
-        """Execute the stored program at ``index``."""
-        self.write(f":PROGram:EXECute {index}")
+    def system_preset(self) -> None:
+        """Reset the instrument to its preset (initialized) state."""
+        self.write(":SYSTem:PRESet")
 
-    # TRACe Sub System Commands — Copy / power density / template actions
+    # TRACe Sub System Commands
 
     def trace_copy(self, source: str, destination: str) -> None:
         """Copy trace ``source`` to ``destination`` (TRA–TRG)."""
         self.write(f":TRACe:COPY {source},{destination}")
+
+    def delete_all_traces(self) -> None:
+        """Delete the data of all traces."""
+        self.write(":TRACe:DELete:ALL")
 
     def trace_power_density(self, trace: str, bandwidth: float) -> str:
         """Query the power spectral density of ``trace`` normalized to ``bandwidth`` (m)."""

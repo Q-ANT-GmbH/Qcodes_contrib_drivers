@@ -541,8 +541,8 @@ def test_trace_data_sample_number(driver):
         assert val >= 0
 
 
-def test_trace_data_x(driver):
-    data = driver.TRA.data_x()
+def test_trace_axis(driver):
+    data = driver.TRA.trace_axis()
     assert isinstance(data, np.ndarray)
     assert data.dtype == np.float64
     # Point count is backend-specific (fixed blob under the sim, live sweep
@@ -550,11 +550,32 @@ def test_trace_data_x(driver):
     assert len(data) > 0
 
 
-def test_trace_data_y(driver):
-    data = driver.TRA.data_y()
+def test_trace_data(driver):
+    data = driver.TRA.data()
     assert isinstance(data, np.ndarray)
     assert data.dtype == np.float64
     assert len(data) > 0
+
+
+def test_trace_data_query_binary_contract(driver, monkeypatch):
+    # Pin the pyvisa contract for the binary trace read: the REAL64 format maps
+    # to datatype 'd' and the AQ637x transmits little-endian (is_big_endian=False).
+    # These two choices are what real-hardware testing must confirm.
+    captured = {}
+
+    def fake_query_binary_values(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return np.array([1.0, 2.0, 3.0])
+
+    monkeypatch.setattr(driver.visa_handle, "query_binary_values", fake_query_binary_values)
+
+    data = driver.TRA.trace_axis()
+
+    assert captured["cmd"] == ":TRACe:DATA:X? TRA"
+    assert captured["kwargs"]["datatype"] == "d"
+    assert captured["kwargs"]["is_big_endian"] is False
+    np.testing.assert_array_equal(data, np.array([1.0, 2.0, 3.0]))
 
 
 def test_trace_delete(driver):

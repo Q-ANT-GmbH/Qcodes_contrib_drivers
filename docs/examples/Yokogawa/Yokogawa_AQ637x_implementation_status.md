@@ -8,38 +8,13 @@
 - **Overall implementation coverage**: 256 / 336 (76%)
 - **Implemented commands with test coverage**: 256 / 256 (100%)
 
-> **Phase 4 (system / status / misc) complete.** `STATus` (7), the `SYSTem` remainder (25), `UNIT` (2),
-> `APPLication:DLOGging` (12), the `TRACe` remainder (`COPY`, `PDENsity?`, 10 `TEMPlate` commands = 12),
-> `PROGram:EXECute` and `DISPlay:POSition` are all implemented. `DISPlay` and `TRACe` are now fully covered.
-> **The only remaining gap is the ~80 `CALCulate` spectral-analysis commands, which were deliberately
-> deferred** (WDM/NF/SMSR/DFB-LD/…, the `PARameter:CATegory` configuration family and trace math).
-
-> **Phase 3 (markers) complete.** All 53 `CALCulate` **marker** commands (20 auto `AMARker`, 27 manual
-> `MARKer`, 6 line `LMARker`) are implemented. Auto markers are modeled as `AMARker1`–`AMARker4`
-> `InstrumentChannel`s (also exposed as the `amarkers` `ChannelTuple`); manual/line markers are
-> instrument-level parameters plus argument-based methods. Spectral **analysis** within `CALCulate`
-> (WDM/NF/SMSR/…, the ~55 `PARameter:CATegory` commands and trace math — ~80 commands) remains **deferred**.
-
-> **Phase 2 (file & triggering) complete.** All 8 `TRIGger`, 32 `MMEMory` and 4 `MEMory` commands are
-> implemented. `TRIGger` uses PyVISA-sim round-trip tests; the `MMEMory`/`MEMory` command-builder methods
-> are verified by asserting the exact SCPI string they emit (more precise than a sim echo, and it keeps the
-> sim file small).
-
-> **Phase 1 (calibration) complete.** All 15 `CALibration` commands are implemented and tested.
-
-> **Phase 0 (test foundation) complete.** Tests now run against a PyVISA-sim backend
-> (`sims/Yokogawa_AQ637x.yaml`) so they execute in CI; the real-hardware address is kept in the fixture
-> as a commented toggle. `SYSTem:ERRor?` was added (`system_error`) as a development aid, the previously
-> untested commands are now covered, and a driver bug (the trace `ChannelTuple` was constructed from name
-> strings instead of channel instances, so the driver could not instantiate) was fixed. The four trace
-> `ATTRibute` keyword methods (`write_mode`/`fix`/`max_hold`/`min_hold`) are skipped under the sim because
-> they rely on instrument-side keyword→code normalization PyVISA-sim cannot emulate; they still run against
-> real hardware.
+All subsystems are fully implemented and tested except the `CALCulate` spectral-analysis commands
+(~80: analysis functions, the `PARameter:CATegory` configuration family, and trace `MATH`), which are
+deliberately out of scope for this driver — see the [Not-Implemented (deferred)](#not-implemented-deferred)
+section below.
 
 > Notes:
 > - Each row in `Yokogawa_AQ637x_command_list.md` is counted as one command. A command that carries a `?` query form (e.g. `DISPlay:COLor`) is counted once and covers both set and query, matching the way the driver exposes a single read/write `Parameter`.
-> - The driver focuses on measurement setup and trace acquisition (COMMON, DISPlay, FORMat, INITiate, SENSe, TRACe). The large analysis/marker (`CALCulate`), file (`MMEMory`), calibration (`CALibration`), status (`STATus`) and system (`SYSTem`) subsystems are currently **not** implemented.
-> - The test suite in `tests/Yokogawa/test_Yokogawa_AQ637x.py` runs against a **real instrument** at a hard-coded TCPIP address (model `AQ6370C`); there is no PyVISA-sim YAML for this driver yet, so the tests are not exercised in CI.
 
 ---
 
@@ -175,8 +150,8 @@
 | `TRACe:DELete:ALL`           | Delete all traces                           | ✅ Implemented     | `delete_all_traces()`                                       | ✅ `test_trace_delete_all`                                 |
 | `TRACe:STATe[:<trace>]`      | Trace display state                         | ✅ Implemented     | `<trace>.state`                                             | ✅ `test_trace_state`                                      |
 | `TRACe[:DATA]:SNUMber?`      | Number of sampled data points               | ✅ Implemented     | `<trace>.data_sample_number`                               | ✅ `test_trace_data_sample_number`                         |
-| `TRACe[:DATA]:X?`            | Wavelength axis data (binary block)         | ✅ Implemented     | `<trace>.data_x`                                           | ✅ `test_trace_data_x`                                     |
-| `TRACe[:DATA]:Y?`            | Level axis data (binary block)              | ✅ Implemented     | `<trace>.data_y`                                           | ✅ `test_trace_data_y`                                     |
+| `TRACe[:DATA]:X?`            | Wavelength axis data (binary block)         | ✅ Implemented     | `<trace>.trace_axis`                                       | ✅ `test_trace_axis`                                       |
+| `TRACe[:DATA]:Y?`            | Level axis data (binary block)              | ✅ Implemented     | `<trace>.data`                                             | ✅ `test_trace_data`                                       |
 | `TRACe:PDENsity?`            | Power density readout                       | ✅ Implemented     | `trace_power_density()`                                     | ✅ `test_trace_power_density`                              |
 | `TRACe:TEMPlate:*` (10 cmds) | Template / GO-NOGO judgement                | ✅ Implemented     | `template_*` params & methods                              | ✅ `test_template_*`, `test_phase4_action_command`         |
 
@@ -278,7 +253,7 @@ sweep-complete detection via the operation status register. Tested by `test_stat
 
 ### SYSTem (remainder)
 
-Beyond `system_error` (Phase 0): buzzer (`system_buzzer_click/warning`), communication
+Beyond `system_error`: buzzer (`system_buzzer_click/warning`), communication
 (`system_communicate_gpib2_address/scontroller/tls_address`, `..._lockout`, `..._rmonitor`), date/time
 (`system_date`, `system_time`), display (`system_display_transparent/uncal`), info
 (`system_version`, `system_fspeed`, `system_information()`), WDM grid (`system_grid`,
@@ -354,8 +329,8 @@ Only the `CALCulate` spectral-analysis commands remain — deliberately deferred
 
 - This file is derived from the command inventory in `Yokogawa_AQ637x_command_list.md` and the current implementation in `src/qcodes_contrib_drivers/drivers/Yokogawa/Yokogawa_AQ637x.py`.
 - The driver targets the AQ6370C/AQ6370D/AQ6373/AQ6373B/AQ6375/AQ6375B family. Two parameters are added conditionally by model: `sense_setting_fiber` (AQ6373/AQ6373B) and `sense_sweep_tlssync` (all except AQ6370D/AQ6373B/AQ6375B).
-- Traces are modelled as a `ChannelTuple` of seven `YokogawaAQ637xChannel` instances (`TRA`–`TRG`), each carrying `state`, `attribute`, `roll_avg`, `data_sample_number`, `data_x`, `data_y` plus `active()`, `delete()`, `write_mode()`, `fix()`, `max_hold()`, `min_hold()`.
-- Binary trace transfer (`data_x` / `data_y`) is handled by the custom `YokogawaData` parameter class, which supports the `REAL64` and `REAL32` formats. Both are now covered by `test_trace_data_x`/`test_trace_data_y` against hand-encoded REAL64 blocks in the sim.
+- Traces are modelled as seven `YokogawaAQ637xChannel` submodules (`TRA`–`TRG`, also exposed as a `ChannelTuple` `traces`), each carrying `state`, `attribute`, `roll_avg`, `data_sample_number`, `trace_axis`, `data` plus `active()`, `delete()`, `write_mode()`, `fix()`, `max_hold()`, `min_hold()`. Following the QCoDeS convention, `trace_axis` is a plain `Parameter` (the X/setpoint axis) and `data` is a `ParameterWithSetpoints` whose `setpoints=(trace_axis,)`.
+- Binary trace transfer (`trace_axis` / `data`) is handled by the custom `YokogawaData` / `YokogawaDataWithSetpoints` parameter classes, which read the IEEE-488.2 definite-length block via pyvisa's `query_binary_values` (`REAL64`→`d`, `REAL32`→`f`, little-endian). Covered by `test_trace_axis`/`test_trace_data` (parse hand-encoded REAL64 blocks in the sim) and `test_trace_data_query_binary_contract` (pins the datatype and byte order); validated on the real `AQ6370C`.
 - **Testing**: `tests/Yokogawa/test_Yokogawa_AQ637x.py` runs against `sims/Yokogawa_AQ637x.yaml` (PyVISA-sim), so the suite executes in CI. The real-hardware address (a `TCPIP::<instrument-ip>::INSTR` VISA resource string, model `AQ6370C`) is kept in the fixture as a commented toggle for development against the physical instrument. A second sim device (`AQ6373`) exercises the model-gated `sense_setting_fiber`.
 - The four trace `ATTRibute` keyword methods (`write_mode`/`fix`/`max_hold`/`min_hold`) are skipped under the sim (`skip_on_sim`) because they depend on instrument-side keyword→code normalization PyVISA-sim cannot reproduce; they still run against real hardware.
 - The convenience methods `auto()`, `repeat()` and `single()` combine `sweep_mode` with `immediate()` to replicate the OSA front-panel sweep buttons.

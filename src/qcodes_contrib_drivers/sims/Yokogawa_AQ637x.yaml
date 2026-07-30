@@ -1344,7 +1344,10 @@ devices:
         specs:
           type: int
       snumber_TRA:
-        default: 1001
+        # Must match the length of the DATA:X?/DATA:Y? TRA blob above (5 REAL64
+        # values); the `data` ParameterWithSetpoints validates its array shape
+        # against this sample count on every get.
+        default: 5
         getter:
           q: ':TRACe:DATA:SNUMber? TRA'
           r: '{:d}'
