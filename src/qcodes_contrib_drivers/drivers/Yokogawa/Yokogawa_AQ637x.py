@@ -26,6 +26,7 @@ from qcodes.validators import Arrays, Enum, Ints, Strings
 if TYPE_CHECKING:
     from typing_extensions import Unpack
     from qcodes.parameters import ParameterKWArgs
+    from pyvisa.util import BINARY_DATATYPES
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class YokogawaData(Parameter):
     """
 
     # Map the instrument data format to the pyvisa/struct datatype code.
-    _DATATYPES = {'REAL64': 'd', 'REAL32': 'f'}
+    _DATATYPES: "dict[str, BINARY_DATATYPES]" = {'REAL64': 'd', 'REAL32': 'f'}
 
     def __init__(
         self,
@@ -48,11 +49,6 @@ class YokogawaData(Parameter):
         data_format: str = 'REAL64',
         **kwargs: "Unpack[ParameterKWArgs]",
     ) -> None:
-        # ``get_cmd`` is a key of ParameterKWArgs, so it cannot also be an
-        # explicit keyword argument (mypy flags the overlap). Pop it from
-        # kwargs instead. This parameter reads the binary block itself (see
-        # ``get_raw``), so the command must be a plain SCPI query string and is
-        # not forwarded to the base class.
         get_cmd = kwargs.pop("get_cmd", None)
         super().__init__(name, **kwargs)
 
