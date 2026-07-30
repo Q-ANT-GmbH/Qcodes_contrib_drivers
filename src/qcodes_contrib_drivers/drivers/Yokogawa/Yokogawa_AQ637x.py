@@ -46,18 +46,23 @@ class YokogawaData(Parameter):
         name: str,
         *,
         data_format: str = 'REAL64',
-        get_cmd: "str | None" = None,
         **kwargs: "Unpack[ParameterKWArgs]",
     ) -> None:
+        # ``get_cmd`` is a key of ParameterKWArgs, so it cannot also be an
+        # explicit keyword argument (mypy flags the overlap). Pop it from
+        # kwargs instead. This parameter reads the binary block itself (see
+        # ``get_raw``), so the command must be a plain SCPI query string and is
+        # not forwarded to the base class.
+        get_cmd = kwargs.pop("get_cmd", None)
         super().__init__(name, **kwargs)
 
         if data_format not in self._DATATYPES:
             raise ValueError(f"Unsupported format {data_format!r}; expected 'REAL64' or 'REAL32'")
-        if get_cmd is None:
-            raise ValueError("YokogawaData requires a get_cmd")
+        if not isinstance(get_cmd, str):
+            raise ValueError("YokogawaData requires a get_cmd query string")
 
         self.data_format = data_format
-        self.get_cmd = get_cmd
+        self._get_cmd = get_cmd
 
     def get_raw(self) -> ParamRawDataType:
         """Retrieve raw binary data for this parameter and return as numpy.ndarray.
@@ -74,7 +79,7 @@ class YokogawaData(Parameter):
 
         # Query and parse the binary block
         return instrument.visa_handle.query_binary_values(
-            self.get_cmd,
+            self._get_cmd,
             datatype=self._DATATYPES[self.data_format],
             is_big_endian=False,
             container=np.ndarray,
