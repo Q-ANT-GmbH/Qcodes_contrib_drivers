@@ -50,6 +50,8 @@ class _RohdeSchwarzSMB100(VisaInstrument):
         freq_min, freq_max = self._query_limits('SOUR:FREQ')
         phase_min, phase_max = self._query_limits('SOUR:PHAS')
         step_min = self._query_limits('SWE:STEP')[0]
+        points_min, points_max = self._query_limits('SWE:POIN')
+        dwell_min, dwell_max = self._query_limits('SWE:DWEL')
 
         self.frequency = Parameter(
             'frequency',
@@ -91,7 +93,6 @@ class _RohdeSchwarzSMB100(VisaInstrument):
             get_cmd=':OUTP:STAT?',
             set_cmd=':OUTP:STAT {}',
             val_mapping=create_on_off_val_mapping(on_val='1', off_val='0'),
-            vals=vals.Ints(0, 1),
             instrument=self
         )
 
@@ -101,7 +102,6 @@ class _RohdeSchwarzSMB100(VisaInstrument):
             get_cmd=':SOUR:PULM:STAT?',
             set_cmd=':SOUR:PULM:STAT {}',
             val_mapping=create_on_off_val_mapping(on_val='1', off_val='0'),
-            vals=vals.Ints(0, 1),
             instrument=self
         )
 
@@ -128,7 +128,7 @@ class _RohdeSchwarzSMB100(VisaInstrument):
         )
 
         self.sweep_step = Parameter(
-            'sweep_stop',
+            'sweep_step',
             label='Sweep: frequency step',
             unit='Hz',
             get_cmd='SWE:STEP?',
@@ -143,9 +143,9 @@ class _RohdeSchwarzSMB100(VisaInstrument):
             label='Sweep: frequency points',
             unit='',
             get_cmd='SWE:POIN?',
-            set_cmd='SWE:POIN {:.12f}',
+            set_cmd='SWE:POIN {:d}',
             get_parser=int,
-            vals=vals.Numbers(2, 20e9),
+            vals=vals.Ints(int(points_min), int(points_max)),
             instrument=self
         )
 
@@ -156,7 +156,7 @@ class _RohdeSchwarzSMB100(VisaInstrument):
             get_cmd='SWE:DWEL?',
             set_cmd='SWE:DWEL {:.12f} s',
             get_parser=float,
-            vals=vals.Numbers(5e-3, 1000),
+            vals=vals.Numbers(dwell_min, dwell_max),
             instrument=self
         )
 
@@ -201,9 +201,24 @@ class _RohdeSchwarzSMB100(VisaInstrument):
         self.log.info('Reset')
         self.write('*RST')
 
-    def run_self_tests(self) -> None:
+    def run_self_tests(self, timeout: float = 60.) -> int:
+        """Run the self-tests of the instrument.
+
+        Args:
+            timeout: VISA timeout in seconds to apply while the self-tests
+                run. They outlast the default timeout of the instrument.
+
+        Returns:
+            The error code. Zero means that no error occurred. The service
+            manual lists the other codes.
+        """
         self.log.info('Initiate self-test of the instrument.')
-        self.write('*TST?')
+        previous_timeout = self.timeout()
+        self.timeout(timeout)
+        try:
+            return int(self.ask('*TST?'))
+        finally:
+            self.timeout(previous_timeout)
 
     def on(self) -> None:
         self.log.info('Output on')
