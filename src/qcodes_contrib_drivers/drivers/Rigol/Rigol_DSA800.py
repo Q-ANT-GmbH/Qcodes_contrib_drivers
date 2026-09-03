@@ -102,7 +102,7 @@ class RigolDSA800Trace(ParameterWithSetpoints):
 class RigolDSA800Marker(InstrumentChannel):
     """Marker control and readout for a single analyzer marker."""
 
-    def __init__(self, parent: "RigolDSA800", name: str, marker_index: int) -> None:
+    def __init__(self, parent: RigolDSA800, name: str, marker_index: int) -> None:
         super().__init__(parent, name)
         self._marker_index = marker_index
 
@@ -188,7 +188,7 @@ class RigolDSA800Marker(InstrumentChannel):
 class RigolDSA800TraceChannel(InstrumentChannel):
     """Trace configuration and readout for a single displayed trace."""
 
-    def __init__(self, parent: "RigolDSA800", name: str, trace_index: int) -> None:
+    def __init__(self, parent: RigolDSA800, name: str, trace_index: int) -> None:
         super().__init__(parent, name)
         self._trace_index = trace_index
 
@@ -222,7 +222,7 @@ class RigolDSA800TraceChannel(InstrumentChannel):
 class RigolDSA800TrackingGenerator(InstrumentChannel):
     """Tracking-generator control for TG-equipped DSA800 analyzers."""
 
-    def __init__(self, parent: "RigolDSA800", name: str) -> None:
+    def __init__(self, parent: RigolDSA800, name: str) -> None:
         super().__init__(parent, name)
 
         self.enabled = self.add_parameter(

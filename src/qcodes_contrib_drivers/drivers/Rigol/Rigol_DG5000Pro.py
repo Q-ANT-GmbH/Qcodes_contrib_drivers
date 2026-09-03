@@ -1,28 +1,31 @@
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, cast
 
-from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument, \
-    ChannelList
-from qcodes.parameters import Parameter
-from qcodes.parameters import create_on_off_val_mapping
+from qcodes.instrument import (
+    ChannelList,
+    ChannelTuple,
+    InstrumentBaseKWArgs,
+    InstrumentChannel,
+    VisaInstrument,
+    VisaInstrumentKWArgs,
+)
+from qcodes.parameters import Parameter, create_on_off_val_mapping
 from qcodes.validators import Enum, Ints, MultiType, Numbers, Strings
 
-import time
-
 if TYPE_CHECKING:
-    from typing_extensions import Unpack
+    from typing import Unpack
 
 
-class RigolDG5000ProChannel(InstrumentChannel):
+class RigolDG5000ProChannel(InstrumentChannel["RigolDG5000Pro"]):
 
     def __init__(
             self,
-            parent: Instrument,
+            parent: "RigolDG5000Pro",
             name: str,
             channel: int,
             **kwargs: "Unpack[InstrumentBaseKWArgs]",
     ) -> None:
         super().__init__(parent, name, **kwargs)
-        self.model = self._parent.model
+        self.model = self.parent.model
         self.channel = channel
 
         # 3.10 :OUTPut Commands
@@ -48,7 +51,7 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "output_load",
             get_cmd=f":OUTPut{channel}:LOAD?",
             set_cmd=f":OUTPut{channel}:LOAD {{}}",
-            vals=MultiType(Ints(1, 10000), Enum("INF", "MIN", "MAX", "DEF")),  # Ohms
+            vals=MultiType(Numbers(1, 10000), Enum("INF", "MIN", "MAX", "DEF")),  # Ohms
             get_parser=float,
         )
         """Output impedance for the specified channel"""
@@ -57,7 +60,8 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "output_polarity",
             get_cmd=f":OUTPut{channel}:POLarity?",
             set_cmd=f":OUTPut{channel}:POLarity {{}}",
-            val_mapping={"normal": "NORM ", "inverted": "INV "},
+            val_mapping={"normal": "NORM", "inverted": "INV"},
+            get_parser=str.strip,
         )
         """Output polarity for the specified channel"""
 
@@ -126,7 +130,7 @@ class RigolDG5000ProChannel(InstrumentChannel):
             "source_am_depth",
             get_cmd=f":SOURce{channel}:AM:DEPTh?",
             set_cmd=f":SOURce{channel}:AM:DEPTh {{}}",
-            vals=MultiType(Ints(0, 120), Enum("MIN", "MAX")),
+            vals=MultiType(Numbers(0, 120), Enum("MIN", "MAX")),
             get_parser=float,
         )
         """AM modulation depth for the specified channel"""
@@ -144,7 +148,9 @@ class RigolDG5000ProChannel(InstrumentChannel):
             get_cmd=f":SOURce{channel}:AM:INTernal:FREQuency?",
             set_cmd=f":SOURce{channel}:AM:INTernal:FREQuency {{}}",
             vals=MultiType(Numbers(2e-3, 1e6), Enum("MIN", "MAX", "DEF")),
+            get_parser=float,
         )
+        """AM modulating frequency for the specified channel"""
 
         self.source_burst_mode: Parameter = self.add_parameter(
             "source_burst_mode",
@@ -218,23 +224,95 @@ class RigolDG5000ProChannel(InstrumentChannel):
 
     def trigger(self) -> None:
         """Generate trigger event for the specified channel"""
-        self.write(f":TRIGger{self.channel}")
+        self.write(f":TRIGger{self.channel}:IMMediate")
 
-    def source_apply_ramp(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+    def source_apply_ramp(
+            self,
+            frequency: float,
+            amplitude: float,
+            offset: float,
+            phase: float,
+            symmetry: float | None = None,
+    ) -> None:
         """Sets the specified channel to output a ramp
 
-        Sets the specified channel to output a ramp (with the maximum symmetry available at the current frequency)
-        with the specified frequency, amplitude, offset, and phase.
+        Sets the specified channel to output a ramp with the specified frequency,
+        amplitude, offset, and phase. When symmetry is supplied, ramp symmetry is
+        explicitly set in percent.
 
         Args:
-                frequency:
-                amplitude:
-                offset:
-                phase:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+                symmetry: Ramp symmetry in percent (0 to 100). Optional.
         """
-        Numbers(*self.root_instrument.frequency_range["ramp"]).validate(frequency)
+        Numbers(*self.parent.frequency_range["ramp"]).validate(frequency)
         Numbers(-360, 360).validate(phase)
         self.write(f":SOURce{self.channel}:APPLy:RAMP {frequency},{amplitude},{offset},{phase}")
+
+        if symmetry is not None:
+            Numbers(0, 100).validate(symmetry)
+            self.write(f":SOURce{self.channel}:FUNCtion:RAMP:SYMMetry {symmetry}")
+
+    def source_apply_sinusoid(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+        """Sets the specified channel to output a sine wave
+
+        Sets the specified channel to output a sine wave with the specified frequency, amplitude, offset, and phase.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+        """
+        Numbers(*self.parent.frequency_range["sine"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
+        self.write(f":SOURce{self.channel}:APPLy:SINusoid {frequency},{amplitude},{offset},{phase}")
+
+    def source_apply_square(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+        """Sets the specified channel to output a square wave
+
+        Sets the specified channel to output a square wave with the specified frequency, amplitude, offset, and phase.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+        """
+        Numbers(*self.parent.frequency_range["square_ft_off"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
+        self.write(f":SOURce{self.channel}:APPLy:SQUare {frequency},{amplitude},{offset},{phase}")
+
+    def source_apply_pulse(self, frequency: float, amplitude: float, offset: float) -> None:
+        """Sets the specified channel to output a pulse
+
+        Sets the specified channel to output a pulse with the specified frequency, amplitude, and offset.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+        """
+        Numbers(*self.parent.frequency_range["pulse"]).validate(frequency)
+        self.write(f":SOURce{self.channel}:APPLy:PULSe {frequency},{amplitude},{offset}")
+
+    def source_apply_arb(self, frequency: float, amplitude: float, offset: float, phase: float) -> None:
+        """Sets the specified channel to output an arbitrary waveform
+
+        Sets the specified channel to output an arbitrary waveform with the specified
+        frequency, amplitude, offset, and phase.
+
+        Args:
+                frequency: Frequency in Hz
+                amplitude: Amplitude in Vpp
+                offset: DC offset in V
+                phase: Phase in degrees
+        """
+        Numbers(*self.parent.frequency_range["arb"]).validate(frequency)
+        Numbers(-360, 360).validate(phase)
+        self.write(f":SOURce{self.channel}:APPLy:ARB {frequency},{amplitude},{offset},{phase}")
 
 
 class RigolDG5000Pro(VisaInstrument):
@@ -306,22 +384,24 @@ class RigolDG5000Pro(VisaInstrument):
     ):
         super().__init__(name, address, **kwargs)
 
-        self.model = self.get_idn()["model"]
+        model = self.get_idn()["model"]
 
-        if self.model in self.MODELS:
-            self.frequency_range = self.FREQ_RANGE[self.model[:4]]
-        elif self.model is None:
+        if model is None:
             raise KeyError("Could not determine model")
-        else:
-            raise KeyError("Model code " + self.model + " is not recognized")
+        if model not in self.MODELS:
+            raise KeyError("Model code " + model + " is not recognized")
 
-        channels = ChannelList(self, "ch", RigolDG5000ProChannel)
-        for i in range(1, self.NUM_CHANNELS[self.model] + 1):
+        self.model = model
+        self.frequency_range = self.FREQ_RANGE[model[:4]]
+        num_channels = self.NUM_CHANNELS[model]
+
+        channels = ChannelList(self, "channels", RigolDG5000ProChannel)
+        for i in range(1, num_channels + 1):
             channels.append(RigolDG5000ProChannel(self, f"ch{i}", i))
-        self.channels = channels.to_channel_tuple()
+        self.channels: ChannelTuple[RigolDG5000ProChannel] = self.add_submodule(
+            "channels", channels.to_channel_tuple()
+        )
         """Instrument channels"""
-
-        self.add_function("abort", call_cmd=":ABORt", docstring="Stops any operation that is triggered")
 
         # :DISPlay commands are used to set or query the status of the current channel and
         # display, and select the method to specify the voltage range, frequency sweep range,
@@ -331,16 +411,16 @@ class RigolDG5000Pro(VisaInstrument):
             "display_brightness",
             get_cmd=":DISPlay:BRIGhtness?",
             set_cmd=":DISPlay:BRIGhtness {:d}",
-            vals=Ints(0, 100),
+            vals=Ints(1, 100),
             get_parser=int,
         )
-        """Display brightness (between 0 and 100)"""
+        """Display brightness in percent (between 1 and 100)"""
 
         self.display_focus: Parameter = self.add_parameter(
             "display_focus",
             get_cmd=":DISPlay:FOCus?",
             set_cmd=":DISPlay:FOCus {}",
-            val_mapping={1: "CH1", 2: "CH2", 3: "CH3", 4: "CH4", 5: "CH5", 6: "CH6", 7: "CH7", 8: "CH8"},
+            val_mapping={i: f"CH{i}" for i in range(1, num_channels + 1)},
         )
         """Current channel"""
 
@@ -393,7 +473,10 @@ class RigolDG5000Pro(VisaInstrument):
             "display_view",
             get_cmd=":DISPlay:VIEW?",
             set_cmd=":DISPlay:VIEW {:s}",
-            val_mapping={"auto": "AUTO", 2: "DUAL", 4: "FOUR", 8: "EIGH"},
+            val_mapping={
+                "auto": "AUTO",
+                **{n: v for n, v in ((2, "DUAL"), (4, "FOUR"), (8, "EIGH")) if n <= num_channels},
+            },
         )
         """Multi-window mode"""
 
@@ -412,11 +495,17 @@ class RigolDG5000Pro(VisaInstrument):
         # :INITiate commands are used to set or query the "wait-for-trigger" state of the
         # instrument.
 
-    def all(self, state: Union[bool, str]) -> None:
+        self.connect_message()
+
+    def abort(self) -> None:
+        """Stops any operation that is triggered"""
+        self.write(":ABORt")
+
+    def all(self, state: bool | str) -> None:
         val_mapping = create_on_off_val_mapping(on_val=1, off_val=0)
         self.write(f":ALL {val_mapping[state]}")
 
-    def display_clear_text(self):
+    def display_clear_text(self) -> None:
         """Clears the text message displayed on the front-panel screen"""
         self.write(":DISPlay:TEXT:CLEar")
 
@@ -430,15 +519,19 @@ class RigolDG5000Pro(VisaInstrument):
         else:
             raise ValueError("Invalid file format (only .bmp or .png is supported)")
 
-        # Read screen capture from device
-        self.write(":HCOPy:SDUMp:DATA?")
-        bytestream = self.root_instrument.visa_handle.read_raw()
-        n = int(bytestream[1:2].decode("ascii"))
-        l = int(bytestream[2:2 + n].decode("ascii"))
-        img = bytestream[2 + n:].strip()
-
-        if len(img) != l:
-            raise ValueError(f"Screen capture data length mismatch: expected {l}, got {len(img)}")
+        # The image arrives as an IEEE 488.2 definite-length block. query_binary_values
+        # reads exactly the announced number of bytes, so the read terminator occurring
+        # inside the binary payload does not truncate it. container=bytes is not visible
+        # to the type checker, hence the cast.
+        with self.timeout.set_to(30):
+            img = cast(
+                bytes,
+                self.visa_handle.query_binary_values(
+                    ":HCOPy:SDUMp:DATA?",
+                    datatype="B",
+                    container=bytes,
+                ),
+            )
 
         with open(file=fname, mode="wb") as f:
             f.write(img)
@@ -451,32 +544,32 @@ class RigolDG5000Pro(VisaInstrument):
         return tuple(options_raw.split(","))
 
 
-    def save(self, slot=0) -> None:
+    def save(self, slot: int = 0) -> None:
         """Stores the current instrument state to a specified location in non-volatile memory"""
         Enum(0, 1, 2, 3, 4, 5).validate(slot)
         self.write(f"*SAVE {slot:d}")
 
 
-    def clear(self):
+    def clear(self) -> None:
         """Clears all the event registers, and also clears the error queue"""
         self.write("*CLS")
 
 
-    def opc(self):
+    def opc(self) -> bool:
         """Queries whether all the previous commands are executed (operation complete)"""
-        assert self.ask("*OPC?") == "1"
+        return self.ask("*OPC?").strip() == "1"
 
 
-    def reset(self):
+    def reset(self) -> None:
         """Resets the instrument to its factory default settings"""
         self.write("*RST")
 
 
-    def trigger(self):
+    def trigger(self) -> None:
         """Generates a trigger event"""
         self.write("*TRG")
 
 
-    def wait(self):
+    def wait(self) -> None:
         """Waits for all the pending operations to complete"""
         self.write("*WAI")

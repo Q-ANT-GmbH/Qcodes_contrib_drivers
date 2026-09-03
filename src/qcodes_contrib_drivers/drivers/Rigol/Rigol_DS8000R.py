@@ -1,83 +1,91 @@
-import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from qcodes.instrument import VisaInstrument, VisaInstrumentKWArgs, InstrumentChannel, InstrumentBaseKWArgs, Instrument, \
-    ChannelList
-from qcodes.parameters import Parameter, ParameterWithSetpoints, ParamRawDataType, create_on_off_val_mapping
-from qcodes.validators import Enum, Ints, Numbers, Arrays
+from qcodes.instrument import (
+    ChannelList,
+    ChannelTuple,
+    InstrumentBaseKWArgs,
+    InstrumentChannel,
+    VisaInstrument,
+    VisaInstrumentKWArgs,
+)
+from qcodes.parameters import (
+    Parameter,
+    ParameterWithSetpoints,
+    ParamRawDataType,
+    create_on_off_val_mapping,
+)
+from qcodes.validators import Arrays, Enum, Ints, MultiType, Numbers
 
 if TYPE_CHECKING:
-    from typing_extensions import Unpack
-
-log = logging.getLogger(__name__)
+    from typing import Unpack
 
 
-class ParameterTimeAxis(Parameter):
+class ParameterTimeAxis(Parameter[Any, "RigolDS8000R"]):
 
-    def get_raw(self):
-        p = self.instrument.get_waveform_preamble()
-        return np.linspace(p["xorigin"], p["xorigin"] + p["xincrement"] * p["points"], p["points"])
-
-
-class ScopeArrayRaw(Parameter):
     def get_raw(self) -> ParamRawDataType:
+        p = self.instrument.get_waveform_preamble()
+        return np.linspace(p["xorigin"], p["xorigin"] + p["xincrement"] * (p["points"] - 1), p["points"])
+
+
+class ScopeArrayRaw(Parameter[Any, "RigolDS8000RChannel"]):
+    def get_raw(self) -> ParamRawDataType:
+        scope = self.instrument.parent
 
         # Ensure STOP
-        if self.root_instrument.trigger_status() != "STOP":
+        if scope.trigger_status() != "STOP":
             raise RuntimeError("Waveform data can only be read when the oscilloscope is in the STOP state.")
 
         # Ensure RAW
-        if self.root_instrument.waveform_mode() != 'raw':
+        if scope.waveform_mode() != 'raw':
             raise RuntimeError("Only raw mode is supported for now.")
 
         # Waveform source
-        self.root_instrument.waveform_source(f"CHAN{self.instrument.channel}")
+        scope.waveform_source(f"CHAN{self.instrument.channel}")
 
-        # Read data
-        self.root_instrument.write(":WAVeform:DATA?")
-        bytestream = self.root_instrument.visa_handle.read_raw()
-        n = int(bytestream[1:2].decode("ascii"))
-        l = int(bytestream[2:2 + n].decode("ascii"))
-        waveform = bytestream[2 + n:].strip()
+        # Ensure a binary transfer format
+        waveform_format = scope.waveform_format()
+        if waveform_format not in ("byte", "word"):
+            raise RuntimeError(f"Waveform format {waveform_format!r} is not supported, use 'byte' or 'word'.")
 
-        # Convert to ndarray
-        if self.root_instrument.waveform_format() == "byte":
-            waveform = np.frombuffer(waveform, dtype=np.uint8, count=l)
-        else:
-            waveform = np.frombuffer(waveform, dtype=np.uint16, count=l)
+        # The instrument omits the end identifier that the programming guide documents.
+        return scope.visa_handle.query_binary_values(
+            ":WAVeform:DATA?",
+            datatype="B" if waveform_format == "byte" else "H",
+            is_big_endian=False,
+            container=np.ndarray,
+            expect_termination=False,
+        )
 
-        return waveform
 
-
-class ScopeArray(ParameterWithSetpoints):
+class ScopeArray(ParameterWithSetpoints[Any, "RigolDS8000RChannel"]):
 
     def get_raw(self) -> ParamRawDataType:
         trace_raw = self.instrument.trace_raw()
 
-        # Covert from ADC values to Voltage
-        p = self.root_instrument.get_waveform_preamble()
-        return (trace_raw - p["yreference"] - p["yorigin"]) * p["yincrement"]
+        # Cast first: the raw trace is unsigned and the offset makes it negative.
+        p = self.instrument.parent.get_waveform_preamble()
+        return (trace_raw.astype(np.float64) - p["yreference"] - p["yorigin"]) * p["yincrement"]
 
 
-class RigolDS8000RChannel(InstrumentChannel):
+class RigolDS8000RChannel(InstrumentChannel["RigolDS8000R"]):
 
     def __init__(
             self,
-            parent: Instrument,
+            parent: "RigolDS8000R",
             name: str,
             channel: int,
             **kwargs: "Unpack[InstrumentBaseKWArgs]",
     ) -> None:
         super().__init__(parent, name, **kwargs)
-        self.model = self._parent.model
+        self.model = self.parent.model
         self.channel = channel
 
         self.bandwidth_limit: Parameter = self.add_parameter(
             "bandwidth_limit",
             set_cmd=f":CHANnel{channel}:BWLimit {{}}",
             get_cmd=f":CHANnel{channel}:BWLimit?",
-            vals=Enum("20M", "OFF"),
+            vals=Enum(*self.parent.bw_limit),
         )
         """Bandwidth limit of the specified channel"""
 
@@ -123,14 +131,14 @@ class RigolDS8000RChannel(InstrumentChannel):
             vals=Numbers(-100e-9, 100e-9),
             get_parser=float
         )
-        """Delay calibration time (used to calibrate the zero offset of the corresponding channel) of the specified channel in (s)"""
+        """Delay calibration time of the specified channel in (s)"""
 
         self.scale: Parameter = self.add_parameter(
             "scale",
             unit="V",
             set_cmd=f":CHANnel{channel}:SCALe {{:f}}",
             get_cmd=f":CHANnel{channel}:SCAle?",
-            vals=Numbers(1e-3, 10),
+            vals=Numbers(min_value=0),
             get_parser=float
         )
         """Vertical scale of the specified channel in (V)"""
@@ -191,6 +199,7 @@ class RigolDS8000RChannel(InstrumentChannel):
 
         self.position: Parameter = self.add_parameter(
             "position",
+            unit="V",
             set_cmd=f":CHANnel{channel}:POSition {{:f}}",
             get_cmd=f":CHANnel{channel}:POSition?",
             vals=Numbers(-100, 100),
@@ -201,7 +210,7 @@ class RigolDS8000RChannel(InstrumentChannel):
         self.trace_raw: Parameter = self.add_parameter(
             "trace_raw",
             parameter_class=ScopeArrayRaw,
-            vals=Arrays(shape=(self.root_instrument.waveform_points.get,)),
+            vals=Arrays(shape=(self.parent.waveform_points.get,)),
             snapshot_value=False
         )
         """Trace of the specified channel in ADC units"""
@@ -211,7 +220,7 @@ class RigolDS8000RChannel(InstrumentChannel):
             unit="V",
             parameter_class=ScopeArray,
             setpoints=(self.parent.timebase_axis,),
-            vals=Arrays(shape=(self.root_instrument.waveform_points.get,)),
+            vals=Arrays(shape=(self.parent.waveform_points.get,)),
             snapshot_value=False
         )
         """Trace of the specified channel in (V)"""
@@ -241,6 +250,28 @@ class RigolDS8000R(VisaInstrument):
         "DS8034-R": 4,
     }
 
+    MEMORY_DEPTHS = {
+        "1k": 1_000,
+        "10k": 10_000,
+        "100k": 100_000,
+        "1M": 1_000_000,
+        "10M": 10_000_000,
+        "25M": 25_000_000,
+        "50M": 50_000_000,
+        "100M": 100_000_000,
+        "125M": 125_000_000,
+        "250M": 250_000_000,
+        "500M": 500_000_000,
+    }
+    """Memory depths accepted by the ``:ACQuire:MDEPth`` command, in points"""
+
+    BW_LIMIT = {
+        "DS8104-R": ("20M", "250M", "500M", "OFF"),
+        "DS8204-R": ("20M", "250M", "500M", "OFF"),
+        "DS8034-R": ("20M", "250M", "OFF"),
+    }
+    """Bandwidth limit settings accepted by each model"""
+
     def __init__(
             self,
             name: str,
@@ -249,21 +280,17 @@ class RigolDS8000R(VisaInstrument):
     ):
         super().__init__(name, address, **kwargs)
 
-        self.model = self.get_idn()["model"]
+        model = self.get_idn()["model"]
 
-        if self.model in self.MODELS:
-            i = self.MODELS.index(self.model)
-            self.bw_limit = [
-                ('20M', '250M', '500M', 'OFF'),
-                ('20M', '250M', '500M', 'OFF'),
-                ('20M', '250M', 'OFF'),
-            ][i]
-        elif self.model is None:
+        if model is None:
             raise KeyError("Could not determine model")
-        else:
-            raise KeyError("Model code " + self.model + " is not recognized")
+        if model not in self.MODELS:
+            raise KeyError("Model code " + model + " is not recognized")
 
-        self.acquire_averages = self.add_parameter(
+        self.model = model
+        self.bw_limit = self.BW_LIMIT[model]
+
+        self.acquire_averages: Parameter = self.add_parameter(
             "acquire_averages",
             set_cmd=":ACQuire:AVERages {}",
             get_cmd=":ACQuire:AVERages?",
@@ -274,14 +301,15 @@ class RigolDS8000R(VisaInstrument):
 
         self.acquire_mdepth: Parameter = self.add_parameter(
             "acquire_mdepth",
-            set_cmd=":ACQuire:MDEPth {:s}",
+            unit="pts",
+            set_cmd=":ACQuire:MDEPth {}",
             get_cmd=":ACQuire:MDEPth?",
-            vals=Enum("AUTO", "1k", "10k", "100k", "1M", "10M", "100M", "125M", "250M", "500M"),
-            get_parser=float
+            vals=MultiType(Enum("AUTO", *self.MEMORY_DEPTHS), Enum(*self.MEMORY_DEPTHS.values())),
+            get_parser=lambda value: int(float(value))
         )
-        """Memory depth of the oscilloscope"""
+        """Memory depth of the oscilloscope in points"""
 
-        self.acquire_type = self.add_parameter(
+        self.acquire_type: Parameter = self.add_parameter(
             "acquire_type",
             set_cmd=":ACQuire:TYPE {}",
             get_cmd=":ACQuire:TYPE?",
@@ -294,15 +322,15 @@ class RigolDS8000R(VisaInstrument):
         )
         """Acquisition mode (NORMal, AVERages, PEAK, HRESolution)."""
 
-        self.acquire_srate = self.add_parameter(
+        self.acquire_srate: Parameter = self.add_parameter(
             "acquire_srate",
             get_cmd=":ACQuire:SRATe?",
-            unit="1/s",
+            unit="Sa/s",
             get_parser=float,
         )
         """Current sample rate in samples per second."""
 
-        self.acquire_aalias = self.add_parameter(
+        self.acquire_aalias: Parameter = self.add_parameter(
             "acquire_aalias",
             set_cmd=":ACQuire:AALias {}",
             get_cmd=":ACQuire:AALias?",
@@ -312,8 +340,8 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_delay_enable: Parameter = self.add_parameter(
             "timebase_delay_enable",
-            set_cmd=f":TIMebase:DELay:ENABle {{}}",
-            get_cmd=f":TIMebase:DELay:ENABLe?",
+            set_cmd=":TIMebase:DELay:ENABle {}",
+            get_cmd=":TIMebase:DELay:ENABLe?",
             val_mapping=create_on_off_val_mapping(1, 0),
         )
         """On/off status of the delayed sweep"""
@@ -321,8 +349,8 @@ class RigolDS8000R(VisaInstrument):
         self.timebase_delay_offset: Parameter = self.add_parameter(
             "timebase_delay_offset",
             unit="s",
-            set_cmd=f":TIMebase:DElay:OFFSet {{}}",
-            get_cmd=f":TIMebase:DElay:OFFSet?",
+            set_cmd=":TIMebase:DElay:OFFSet {}",
+            get_cmd=":TIMebase:DElay:OFFSet?",
             vals=Numbers(),
             get_parser=float
         )
@@ -331,8 +359,8 @@ class RigolDS8000R(VisaInstrument):
         self.timebase_delay_scale: Parameter = self.add_parameter(
             "timebase_delay_scale",
             unit="s/div",
-            set_cmd=f":TIMebase:DElay:SCALe {{}}",
-            get_cmd=f":TIMebase:DElay:SCALe?",
+            set_cmd=":TIMebase:DElay:SCALe {}",
+            get_cmd=":TIMebase:DElay:SCALe?",
             vals=Numbers(),
             get_parser=float
         )
@@ -341,8 +369,8 @@ class RigolDS8000R(VisaInstrument):
         self.timebase_offset: Parameter = self.add_parameter(
             "timebase_offset",
             unit="s",
-            set_cmd=f":TIMebase:OFFSet {{}}",
-            get_cmd=f":TIMebase:OFFSet?",
+            set_cmd=":TIMebase:OFFSet {}",
+            get_cmd=":TIMebase:OFFSet?",
             vals=Numbers(),
             get_parser=float
         )
@@ -351,8 +379,8 @@ class RigolDS8000R(VisaInstrument):
         self.timebase_scale: Parameter = self.add_parameter(
             "timebase_scale",
             unit="s/div",
-            set_cmd=f":TIMebase:SCALe {{}}",
-            get_cmd=f":TIMebase:SCALe?",
+            set_cmd=":TIMebase:SCALe {}",
+            get_cmd=":TIMebase:SCALe?",
             vals=Numbers(),
             get_parser=float
         )
@@ -360,16 +388,16 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_mode: Parameter = self.add_parameter(
             "timebase_mode",
-            set_cmd=f":TIMebase:MODE {{}}",
-            get_cmd=f":TIMebase:MODE?",
+            set_cmd=":TIMebase:MODE {}",
+            get_cmd=":TIMebase:MODE?",
             val_mapping={"yt": "MAIN", "xy": "XY", "roll": "ROLL"},
         )
         """Horizontal timebase mode"""
 
         self.timebase_href_mode: Parameter = self.add_parameter(
             "timebase_href_mode",
-            set_cmd=f":TIMebase:HREFerence:MODE {{}}",
-            get_cmd=f":TIMebase:HREFerence:MODE?",
+            set_cmd=":TIMebase:HREFerence:MODE {}",
+            get_cmd=":TIMebase:HREFerence:MODE?",
             val_mapping={
                 "center": "CENT",
                 "left_border": "LB",
@@ -382,8 +410,8 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_href_position: Parameter = self.add_parameter(
             "timebase_href_position",
-            set_cmd=f":TIMebase:HREFerence:POSition {{}}",
-            get_cmd=f":TIMebase:HREFerence:POSition?",
+            set_cmd=":TIMebase:HREFerence:POSition {}",
+            get_cmd=":TIMebase:HREFerence:POSition?",
             vals=Ints(-500, 500),
             get_parser=int
         )
@@ -391,13 +419,20 @@ class RigolDS8000R(VisaInstrument):
 
         self.timebase_vernier: Parameter = self.add_parameter(
             "timebase_vernier",
-            set_cmd=f":TIMebase:VERNier {{}}",
-            get_cmd=f":TIMebase:VERNier?",
+            set_cmd=":TIMebase:VERNier {}",
+            get_cmd=":TIMebase:VERNier?",
             val_mapping=create_on_off_val_mapping(1, 0),
         )
         """On/off status of the fine adjustment function of the horizontal scale"""
 
-        self.trigger_mode = self.add_parameter(
+        self.trigger_status: Parameter = self.add_parameter(
+            "trigger_status",
+            get_cmd=":TRIGger:STATus?",
+            vals=Enum("TD", "WAIT", "RUN", "AUTO", "STOP"),
+        )
+        """Current trigger status"""
+
+        self.trigger_mode: Parameter = self.add_parameter(
             "trigger_mode",
             set_cmd=":TRIGger:MODE {}",
             get_cmd=":TRIGger:MODE?",
@@ -426,7 +461,7 @@ class RigolDS8000R(VisaInstrument):
         )
         """Trigger type"""
 
-        self.trigger_coupling = self.add_parameter(
+        self.trigger_coupling: Parameter = self.add_parameter(
             "trigger_coupling",
             set_cmd=":TRIGger:COUPling {}",
             get_cmd=":TRIGger:COUPling?",
@@ -439,7 +474,7 @@ class RigolDS8000R(VisaInstrument):
         )
         """Trigger coupling type (AC, DC, LFReject, HFReject)."""
 
-        self.trigger_sweep = self.add_parameter(
+        self.trigger_sweep: Parameter = self.add_parameter(
             "trigger_sweep",
             set_cmd=":TRIGger:SWEep {}",
             get_cmd=":TRIGger:SWEep?",
@@ -451,7 +486,7 @@ class RigolDS8000R(VisaInstrument):
         )
         """Trigger sweep mode (AUTO, NORMal, SINGle)."""
 
-        self.trigger_holdoff = self.add_parameter(
+        self.trigger_holdoff: Parameter = self.add_parameter(
             "trigger_holdoff",
             unit="s",
             set_cmd=":TRIGger:HOLDoff {}",
@@ -461,7 +496,7 @@ class RigolDS8000R(VisaInstrument):
         )
         """Trigger holdoff time in seconds (8 ns – 10 s)."""
 
-        self.trigger_noise_reject = self.add_parameter(
+        self.trigger_noise_reject: Parameter = self.add_parameter(
             "trigger_noise_reject",
             set_cmd=":TRIGger:NREJect {}",
             get_cmd=":TRIGger:NREJect?",
@@ -469,17 +504,18 @@ class RigolDS8000R(VisaInstrument):
         )
         """Enables or disables trigger noise rejection."""
 
-        self.trigger_ext_delay = self.add_parameter(
+        self.trigger_ext_delay: Parameter = self.add_parameter(
             "trigger_ext_delay",
             unit="s",
             set_cmd=":TRIGger:EXTDelay {:f}",
             get_cmd=":TRIGger:EXTDelay?",
-            vals=Numbers(-500000, 500000),
+            vals=Numbers(-500e-9, 500e-9),
             get_parser=float,
+            scale=1e12,
         )
         """External trigger delay in seconds (-500 ns – 500 ns)."""
 
-        self.trigger_edge_source = self.add_parameter(
+        self.trigger_edge_source: Parameter = self.add_parameter(
             "trigger_edge_source",
             set_cmd=":TRIGger:EDGE:SOURce {}",
             get_cmd=":TRIGger:EDGE:SOURce?",
@@ -494,7 +530,7 @@ class RigolDS8000R(VisaInstrument):
         )
         """Edge trigger source (CHAN1–4, ACLine, EXT)."""
 
-        self.trigger_edge_slope = self.add_parameter(
+        self.trigger_edge_slope: Parameter = self.add_parameter(
             "trigger_edge_slope",
             set_cmd=":TRIGger:EDGE:SLOPe {}",
             get_cmd=":TRIGger:EDGE:SLOPe?",
@@ -506,17 +542,17 @@ class RigolDS8000R(VisaInstrument):
         )
         """Edge trigger slope (POSitive, NEGative, RFALl)."""
 
-        self.trigger_edge_level = self.add_parameter(
+        self.trigger_edge_level: Parameter = self.add_parameter(
             "trigger_edge_level",
             set_cmd=":TRIGger:EDGE:LEVel {}",
             get_cmd=":TRIGger:EDGE:LEVel?",
             unit="V",
-            vals=Numbers(-5, 5),
+            vals=Numbers(),
             get_parser=float,
         )
         """Edge trigger level in volts."""
 
-        self.trigger_pulse_source = self.add_parameter(
+        self.trigger_pulse_source: Parameter = self.add_parameter(
             "trigger_pulse_source",
             set_cmd=":TRIGger:PULSe:SOURce {}",
             get_cmd=":TRIGger:PULSe:SOURce?",
@@ -529,7 +565,7 @@ class RigolDS8000R(VisaInstrument):
         )
         """Pulse trigger source (CHAN1–4)."""
 
-        self.trigger_pulse_when = self.add_parameter(
+        self.trigger_pulse_when: Parameter = self.add_parameter(
             "trigger_pulse_when",
             set_cmd=":TRIGger:PULSe:WHEN {}",
             get_cmd=":TRIGger:PULSe:WHEN?",
@@ -541,17 +577,17 @@ class RigolDS8000R(VisaInstrument):
         )
         """Pulse trigger condition (GREater, LESS, GLESs)."""
 
-        self.trigger_pulse_uwidth = self.add_parameter(
+        self.trigger_pulse_uwidth: Parameter = self.add_parameter(
             "trigger_pulse_uwidth",
             set_cmd=":TRIGger:PULSe:UWIDth {}",
             get_cmd=":TRIGger:PULSe:UWIDth?",
             unit="s",
-            vals=Numbers(0, 10),
+            vals=Numbers(800e-12, 10),
             get_parser=float,
         )
-        """Pulse trigger upper width limit in seconds (up to 10 s)."""
+        """Pulse trigger upper width limit in seconds (800 ps – 10 s)."""
 
-        self.trigger_pulse_lwidth = self.add_parameter(
+        self.trigger_pulse_lwidth: Parameter = self.add_parameter(
             "trigger_pulse_lwidth",
             set_cmd=":TRIGger:PULSe:LWIDth {}",
             get_cmd=":TRIGger:PULSe:LWIDth?",
@@ -561,36 +597,36 @@ class RigolDS8000R(VisaInstrument):
         )
         """Pulse trigger lower width limit in seconds (≥ 800 ps)."""
 
-        self.trigger_pulse_level = self.add_parameter(
+        self.trigger_pulse_level: Parameter = self.add_parameter(
             "trigger_pulse_level",
             set_cmd=":TRIGger:PULSe:LEVel {}",
             get_cmd=":TRIGger:PULSe:LEVel?",
             unit="V",
-            vals=Numbers(-5, 5),
+            vals=Numbers(),
             get_parser=float,
         )
         """Pulse trigger level in volts."""
 
         self.waveform_source: Parameter = self.add_parameter(
             "waveform_source",
-            set_cmd=f":WAVeform:SOURce {{}}",
-            get_cmd=f":WAVeform:SOURce?",
+            set_cmd=":WAVeform:SOURce {}",
+            get_cmd=":WAVeform:SOURce?",
             vals=Enum("CHAN1", "CHAN2", "CHAN3", "CHAN4", "MATH1", "MATH2", "MATH3", "MATH4"),
         )
         """Source channel of waveform data reading"""
 
         self.waveform_mode: Parameter = self.add_parameter(
             "waveform_mode",
-            set_cmd=f":WAVeform:MODE {{}}",
-            get_cmd=f":WAVeform:MODE?",
+            set_cmd=":WAVeform:MODE {}",
+            get_cmd=":WAVeform:MODE?",
             val_mapping={"normal": "NORM", "maximum": "MAX", "raw": "RAW"},
         )
         """Mode of the waveform_data command in reading data"""
 
         self.waveform_format: Parameter = self.add_parameter(
             "waveform_format",
-            set_cmd=f":WAVeform:FORMat {{}}",
-            get_cmd=f":WAVeform:FORMat?",
+            set_cmd=":WAVeform:FORMat {}",
+            get_cmd=":WAVeform:FORMat?",
             val_mapping={"word": "WORD", "byte": "BYTE", "ascii": "ASC"},
         )
         """Return format of the waveform data points to be read"""
@@ -606,8 +642,8 @@ class RigolDS8000R(VisaInstrument):
 
         self.waveform_start: Parameter = self.add_parameter(
             "waveform_start",
-            set_cmd=f":WAVeform:STARt {{}}",
-            get_cmd=f":WAVeform:STARt?",
+            set_cmd=":WAVeform:STARt {}",
+            get_cmd=":WAVeform:STARt?",
             vals=Ints(),
             get_parser=int
         )
@@ -615,8 +651,8 @@ class RigolDS8000R(VisaInstrument):
 
         self.waveform_stop: Parameter = self.add_parameter(
             "waveform_stop",
-            set_cmd=f":WAVeform:STOP {{}}",
-            get_cmd=f":WAVeform:STOP?",
+            set_cmd=":WAVeform:STOP {}",
+            get_cmd=":WAVeform:STOP?",
             vals=Ints(),
             get_parser=int
         )
@@ -631,20 +667,17 @@ class RigolDS8000R(VisaInstrument):
         )
         """Array of values corresponding to the time axes (w.r.t to trigger point)"""
 
-        channels = ChannelList(self, "ch", RigolDS8000RChannel)
+        channels = ChannelList(self, "channels", RigolDS8000RChannel)
         for i in range(1, self.NUM_CHANNELS[self.model] + 1):
             channels.append(RigolDS8000RChannel(self, f"ch{i}", i))
-        self.channels = channels.to_channel_tuple()
+        self.channels: ChannelTuple[RigolDS8000RChannel] = self.add_submodule("channels", channels.to_channel_tuple())
         """Instrument channels"""
 
-    def trigger_status(self):
-        """Queries the current trigger status"""
-        return self.ask(":TRIGger:STATus?")
+        self.connect_message()
 
-    def get_waveform_preamble(self):
+    def get_waveform_preamble(self) -> dict[str, Any]:
         """Returns 10 waveform parameters seperated by comma"""
-        preample = self.ask(":WAVeform:PREamble?")
-        preample = preample.split(",")
+        preample = self.ask(":WAVeform:PREamble?").split(",")
         preample_dict = {
             "format": ["BYTE", "WORD", "ASC"][int(preample[0])],
             "type": ["NORM", "MAX", "RAW"][int(preample[1])],
@@ -683,6 +716,6 @@ class RigolDS8000R(VisaInstrument):
         """Generates a trigger signal forcibly"""
         self.write(":TFORce")
 
-    def reset(self):
+    def reset(self) -> None:
         """Resets the instrument to its factory default settings"""
         self.write("*RST")

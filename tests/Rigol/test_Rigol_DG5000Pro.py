@@ -323,3 +323,6 @@ def test_source_apply_ramp(driver):
         offset = 0
         phase = 0
         ch.source_apply_ramp(frequency, amplitude, offset, phase)
+
+        symmetry = 100 * random.random()
+        ch.source_apply_ramp(frequency, amplitude, offset, phase, symmetry=symmetry)

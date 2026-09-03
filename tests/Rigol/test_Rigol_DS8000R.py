@@ -34,6 +34,8 @@ def test_acquire_averages(driver):
 
 
 def test_acquire_mdepth(driver):
+    # Required to be able to change the memory depth
+    driver.run()
     driver.acquire_type("normal")
 
     # Turn on only CH1 to have access to max memory depth
@@ -182,13 +184,13 @@ def test_trigger_noise_reject(driver):
 def test_trigger_ext_delay(driver):
     driver.trigger_edge_source("ext")
 
-    driver.trigger_ext_delay(-500000)
-    assert driver.trigger_ext_delay() == pytest.approx(-500000, rel=1e-6)
-    driver.trigger_ext_delay(499990)
-    assert driver.trigger_ext_delay() == pytest.approx(499990, rel=1e-6)
-    val = random.uniform(-500000, 500000)
+    driver.trigger_ext_delay(-500e-9)
+    assert driver.trigger_ext_delay() == pytest.approx(-500e-9, rel=1e-6)
+    driver.trigger_ext_delay(499.99e-9)
+    assert driver.trigger_ext_delay() == pytest.approx(499.99e-9, rel=1e-6)
+    val = random.uniform(-500e-9, 500e-9)
     driver.trigger_ext_delay(val)
-    assert driver.trigger_ext_delay() == pytest.approx(val, abs=10.0)
+    assert driver.trigger_ext_delay() == pytest.approx(val, abs=10e-12)
 
 
 @pytest.mark.parametrize("source", ["ch1", "ch2", "ch3", "ch4", "acline", "ext"])
@@ -370,6 +372,20 @@ def test_ch_trace_raw(driver):
 def test_ch_trace(driver):
     driver.stop()
     assert array(driver.channels.trace()).shape == (4, *driver.timebase_axis().shape)
+
+
+def test_ch_trace_scaling(driver):
+    # The raw trace is unsigned, so the conversion has to widen it before subtracting the
+    # reference. Unsigned wrap-around breaks the order of the samples.
+    driver.stop()
+
+    for channel in driver.channels:
+        raw = channel.trace_raw()
+        trace = channel.trace()
+        assert np.issubdtype(trace.dtype, np.floating)
+
+        order = np.argsort(raw.astype(np.float64), kind="stable")
+        assert all(np.diff(trace[order]) >= 0)
 
 
 def test_autoscale(driver):

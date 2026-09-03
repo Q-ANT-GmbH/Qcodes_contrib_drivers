@@ -1,6 +1,7 @@
 from qcodes.instrument import VisaInstrument
 from qcodes.validators import Numbers
 
+
 class RigolDP932E(VisaInstrument):
     """
     QCoDeS driver for the Rigol DP932E Programmable DC Power Supply.
