@@ -5,11 +5,9 @@ Written by Edward Laird (http://wp.lancs.ac.uk/laird-group/) based on another Ri
 A documentation notebook is in the docs/examples/ directory.
 """
 
-import logging
 from qcodes import validators as vals
 from qcodes.instrument import VisaInstrument
 
-log = logging.getLogger(__name__)
 
 class RigolDSG3136B(VisaInstrument):
     """
